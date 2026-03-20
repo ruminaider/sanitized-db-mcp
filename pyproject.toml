@@ -1,8 +1,19 @@
 [project]
 name = "sanitized-db-mcp"
 version = "0.1.0"
-description = "Sanitizing MCP server for PII/PHI-safe database queries"
+description = "MCP server that rewrites SQL to prevent PII/PHI exposure in AI agent queries"
 requires-python = ">=3.11"
+license = "MIT"
+readme = "README.md"
+keywords = ["mcp", "sql", "pii", "phi", "sanitization", "postgresql", "llm", "agent"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Database",
+    "Topic :: Security",
+]
 dependencies = [
     "mcp>=1.0.0",
     "pglast>=6.0",
@@ -10,6 +21,11 @@ dependencies = [
     "pyyaml>=6.0",
     "httpx>=0.27",
 ]
+
+[project.urls]
+Homepage = "https://github.com/ruminaider/sanitized-db-mcp"
+Repository = "https://github.com/ruminaider/sanitized-db-mcp"
+Issues = "https://github.com/ruminaider/sanitized-db-mcp/issues"
 
 [project.optional-dependencies]
 dev = [

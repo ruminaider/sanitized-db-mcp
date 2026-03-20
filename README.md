@@ -1,5 +1,9 @@
 # Sanitized DB MCP Server
 
+[![PyPI](https://img.shields.io/pypi/v/sanitized-db-mcp)](https://pypi.org/project/sanitized-db-mcp/)
+[![Docker](https://img.shields.io/badge/ghcr.io-sanitized--db--mcp-blue)](https://ghcr.io/ruminaider/sanitized-db-mcp)
+[![Tests](https://github.com/ruminaider/sanitized-db-mcp/actions/workflows/test.yml/badge.svg)](https://github.com/ruminaider/sanitized-db-mcp/actions/workflows/test.yml)
+
 An MCP server that rewrites SQL queries at the AST level to prevent PII/PHI exposure.
 
 ## Why This Exists
@@ -13,7 +17,9 @@ AI agents write SQL. They also hallucinate column names, ignore access controls,
 Generate a scaffold from your database schema:
 
 ```bash
+# Install the CLI (skip if using uvx or Docker below)
 pip install sanitized-db-mcp
+
 sanitized-db-mcp generate-allowlist --database-url postgresql://user:pass@host:5432/mydb > allowlist.yaml
 ```
 
@@ -21,13 +27,72 @@ Edit the YAML to expose only the columns agents should see (see [Generating an A
 
 ### 2. Run the server
 
-**Docker:**
+Pick one of the four methods below and add the config to your `.mcp.json`.
+
+#### Method 1: uvx (recommended — zero install)
+
+```json
+{
+  "sanitized-db": {
+    "type": "stdio",
+    "command": "uvx",
+    "args": ["sanitized-db-mcp"],
+    "env": {
+      "ALLOWLIST_PATH": "./allowlist.yaml",
+      "DATABASE_URL": "postgresql://user:pass@host:5432/mydb"
+    }
+  }
+}
+```
+
+No install needed. `uvx` downloads and runs the package in an isolated environment.
+
+#### Method 2: pip install
+
+```bash
+pip install sanitized-db-mcp
+```
+
+```json
+{
+  "sanitized-db": {
+    "type": "stdio",
+    "command": "python3",
+    "args": ["-m", "sanitized_db_mcp.server"],
+    "env": {
+      "ALLOWLIST_PATH": "./allowlist.yaml",
+      "DATABASE_URL": "postgresql://user:pass@host:5432/mydb"
+    }
+  }
+}
+```
+
+#### Method 3: Docker (pre-built image)
+
+```json
+{
+  "sanitized-db": {
+    "type": "stdio",
+    "command": "docker",
+    "args": [
+      "run", "-i", "--rm",
+      "-e", "ALLOWLIST_PATH=/app/allowlist.yaml",
+      "-e", "DATABASE_URL",
+      "-v", "./allowlist.yaml:/app/allowlist.yaml:ro",
+      "ghcr.io/ruminaider/sanitized-db-mcp:latest"
+    ],
+    "env": {
+      "DATABASE_URL": "postgresql://user:pass@host:5432/mydb"
+    }
+  }
+}
+```
+
+#### Method 4: Docker (build from source)
 
 ```bash
 docker build -t sanitized-db-mcp:local .
 ```
-
-Add to `.mcp.json`:
 
 ```json
 {
@@ -42,28 +107,6 @@ Add to `.mcp.json`:
       "sanitized-db-mcp:local"
     ],
     "env": {
-      "DATABASE_URL": "postgresql://user:pass@host:5432/mydb"
-    }
-  }
-}
-```
-
-**pip:**
-
-```bash
-pip install -e ".[dev]"
-```
-
-Add to `.mcp.json`:
-
-```json
-{
-  "sanitized-db": {
-    "type": "stdio",
-    "command": "python3",
-    "args": ["-m", "sanitized_db_mcp.server"],
-    "env": {
-      "ALLOWLIST_PATH": "./allowlist.yaml",
       "DATABASE_URL": "postgresql://user:pass@host:5432/mydb"
     }
   }
