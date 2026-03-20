@@ -65,7 +65,7 @@ def create_server() -> tuple[Server, Allowlist]:
         len(allowlist.allowed_functions),
     )
 
-    server = Server("sanitized-db")
+    server = Server(os.environ.get("MCP_SERVER_NAME", "sanitized-db"))
 
     @server.list_tools()
     async def list_tools() -> list[Tool]:

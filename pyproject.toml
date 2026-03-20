@@ -17,6 +17,9 @@ dev = [
     "pytest-asyncio>=0.23",
 ]
 
+[project.scripts]
+sanitized-db-mcp = "sanitized_db_mcp.cli:main"
+
 [tool.hatch.build.targets.wheel]
 packages = ["sanitized_db_mcp"]
 
