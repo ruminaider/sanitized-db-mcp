@@ -97,6 +97,8 @@ def create_sse_app(server: Server) -> Starlette | BearerAuthMiddleware:
     sse_transport = SseServerTransport("/messages/")
 
     async def handle_sse(request: Request) -> Response:
+        # _send is a private attr on starlette Request; connect_sse needs
+        # the raw ASGI send callable. This is the canonical MCP SDK pattern.
         async with sse_transport.connect_sse(
             request.scope, request.receive, request._send
         ) as (read_stream, write_stream):
