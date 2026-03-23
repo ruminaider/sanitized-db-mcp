@@ -143,3 +143,67 @@ class TestCreateSseApp:
         # (We can't hit /sse because connect_sse blocks waiting for MCP session)
         resp = client.get("/health")
         assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Transport dispatch (server.py main)
+# ---------------------------------------------------------------------------
+
+class TestTransportDispatch:
+    """Tests for MCP_TRANSPORT parsing and dispatch in server.main()."""
+
+    def test_unknown_transport_raises(self, monkeypatch, tmp_path):
+        """Unknown MCP_TRANSPORT value raises ConfigurationError."""
+        from sanitized_db_mcp.errors import ConfigurationError
+
+        # create_server() needs ALLOWLIST_PATH — provide a minimal one
+        allowlist_file = tmp_path / "allowlist.yaml"
+        allowlist_file.write_text(
+            "tables:\n  test_table:\n    id:\n      type: integer\n      placeholder: '0'\n"
+            "allowed_functions:\n  - COUNT\n"
+        )
+        monkeypatch.setenv("ALLOWLIST_PATH", str(allowlist_file))
+        monkeypatch.setenv("MCP_TRANSPORT", "bogus")
+
+        from sanitized_db_mcp.server import main
+
+        with pytest.raises(ConfigurationError, match="Unknown MCP_TRANSPORT"):
+            main()
+
+    def test_transport_case_insensitive(self, monkeypatch, tmp_path):
+        """MCP_TRANSPORT=SSE (uppercase) should be accepted."""
+        allowlist_file = tmp_path / "allowlist.yaml"
+        allowlist_file.write_text(
+            "tables:\n  test_table:\n    id:\n      type: integer\n      placeholder: '0'\n"
+            "allowed_functions:\n  - COUNT\n"
+        )
+        monkeypatch.setenv("ALLOWLIST_PATH", str(allowlist_file))
+        monkeypatch.setenv("MCP_TRANSPORT", "SSE")
+        monkeypatch.setenv("MCP_API_KEY", "test")
+
+        from sanitized_db_mcp.server import main
+        from unittest.mock import patch
+
+        # Mock uvicorn.run so it doesn't actually start a server
+        with patch("sanitized_db_mcp.transport.uvicorn") as mock_uvicorn:
+            mock_uvicorn.run = lambda *a, **kw: None
+            main()  # should not raise
+
+    def test_default_transport_is_stdio(self, monkeypatch, tmp_path):
+        """Unset MCP_TRANSPORT defaults to stdio."""
+        allowlist_file = tmp_path / "allowlist.yaml"
+        allowlist_file.write_text(
+            "tables:\n  test_table:\n    id:\n      type: integer\n      placeholder: '0'\n"
+            "allowed_functions:\n  - COUNT\n"
+        )
+        monkeypatch.setenv("ALLOWLIST_PATH", str(allowlist_file))
+        monkeypatch.delenv("MCP_TRANSPORT", raising=False)
+
+        from sanitized_db_mcp.server import main
+        from unittest.mock import patch
+
+        # Mock asyncio.run to capture the coroutine without executing
+        with patch("sanitized_db_mcp.server.asyncio") as mock_asyncio:
+            mock_asyncio.run = lambda coro: coro.close()  # close the coroutine cleanly
+            main()
+            # If we got here without error, stdio was selected (default)
