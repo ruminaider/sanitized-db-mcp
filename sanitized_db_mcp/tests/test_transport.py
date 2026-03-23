@@ -133,6 +133,15 @@ class TestCreateSseApp:
         resp = client.get("/sse")
         assert resp.status_code == 401
 
+    def test_messages_endpoint_requires_auth_when_key_set(self, monkeypatch):
+        from sanitized_db_mcp.transport import create_sse_app
+
+        monkeypatch.setenv("MCP_API_KEY", "test-key")
+        app = create_sse_app(self._make_mock_server())
+        client = TestClient(app)
+        resp = client.post("/messages/")
+        assert resp.status_code == 401
+
     def test_no_auth_when_key_unset(self, monkeypatch):
         from sanitized_db_mcp.transport import create_sse_app
 
