@@ -76,3 +76,70 @@ class TestBearerAuthMiddleware:
         client = TestClient(_make_app(api_key=None))
         resp = client.get("/test")  # no auth header, no middleware
         assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Health endpoint
+# ---------------------------------------------------------------------------
+
+class TestHealthEndpoint:
+    """Tests for the /health endpoint."""
+
+    def test_health_returns_ok(self):
+        from sanitized_db_mcp.transport import health_check
+
+        app = Starlette(routes=[Route("/health", endpoint=health_check, methods=["GET"])])
+        client = TestClient(app)
+        resp = client.get("/health")
+        assert resp.status_code == 200
+        assert resp.json() == {"status": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# SSE app construction
+# ---------------------------------------------------------------------------
+
+class TestCreateSseApp:
+    """Tests for create_sse_app() factory."""
+
+    def _make_mock_server(self):
+        """Create a minimal MCP Server for testing app construction."""
+        from mcp.server import Server
+        return Server("test-server")
+
+    def test_returns_asgi_app(self):
+        from sanitized_db_mcp.transport import create_sse_app
+
+        app = create_sse_app(self._make_mock_server())
+        # ASGI apps are callable with (scope, receive, send)
+        assert callable(app)
+
+    def test_health_accessible_without_auth(self, monkeypatch):
+        from sanitized_db_mcp.transport import create_sse_app
+
+        monkeypatch.setenv("MCP_API_KEY", "test-key")
+        app = create_sse_app(self._make_mock_server())
+        client = TestClient(app)
+        resp = client.get("/health")
+        assert resp.status_code == 200
+        assert resp.json() == {"status": "ok"}
+
+    def test_sse_endpoint_requires_auth_when_key_set(self, monkeypatch):
+        from sanitized_db_mcp.transport import create_sse_app
+
+        monkeypatch.setenv("MCP_API_KEY", "test-key")
+        app = create_sse_app(self._make_mock_server())
+        client = TestClient(app)
+        resp = client.get("/sse")
+        assert resp.status_code == 401
+
+    def test_no_auth_when_key_unset(self, monkeypatch):
+        from sanitized_db_mcp.transport import create_sse_app
+
+        monkeypatch.delenv("MCP_API_KEY", raising=False)
+        app = create_sse_app(self._make_mock_server())
+        client = TestClient(app)
+        # /sse without auth should NOT return 401 (it may fail for other reasons
+        # like missing SSE negotiation, but it should not be 401)
+        resp = client.get("/sse")
+        assert resp.status_code != 401
