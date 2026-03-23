@@ -188,6 +188,65 @@ The server prefers Render API credentials when both are set. For local developme
 - **Rails / Other**: Use the CLI tool to scaffold, then curate manually. Or build your own generator that outputs the same YAML format.
 - **Custom generators**: The YAML format is the contract. Any tool that produces conformant YAML works.
 
+## SSE Transport (Remote Deployment)
+
+For shared deployments (e.g., Render.com), the server supports SSE transport over HTTP.
+
+### Installation
+
+```bash
+pip install 'sanitized-db-mcp[sse]'
+```
+
+### Configuration
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `MCP_TRANSPORT` | No | `stdio` | Transport mode: `stdio` or `sse` |
+| `PORT` | No | `8000` | HTTP port (Render sets this automatically) |
+| `MCP_API_KEY` | Recommended | — | Bearer token for HTTP authentication |
+
+### Running
+
+```bash
+export MCP_TRANSPORT=sse
+export MCP_API_KEY=your-secret-key
+export ALLOWLIST_PATH=./allowlist.yaml
+export DATABASE_URL=postgresql://...
+python -m sanitized_db_mcp.server
+```
+
+### Docker
+
+```bash
+docker run -e MCP_TRANSPORT=sse -e MCP_API_KEY=secret -e ALLOWLIST_PATH=/app/allowlist.yaml \
+  -e DATABASE_URL=postgresql://... -p 8000:8000 sanitized-db-mcp
+```
+
+### Claude Code Client Configuration
+
+In your MCP client config, point to the SSE endpoint:
+
+```json
+{
+  "mcpServers": {
+    "sanitized-db": {
+      "type": "sse",
+      "url": "https://your-service.onrender.com/sse",
+      "headers": {
+        "Authorization": "Bearer your-secret-key"
+      }
+    }
+  }
+}
+```
+
+### Endpoints
+
+- `GET /sse` — SSE connection (MCP session)
+- `POST /messages/` — Client-to-server messages
+- `GET /health` — Health check (no auth required)
+
 ## How the Sanitizer Works
 
 The server exposes a single MCP tool (`query`) that accepts raw SQL and returns sanitized results. Every query passes through an 11-step pipeline:
