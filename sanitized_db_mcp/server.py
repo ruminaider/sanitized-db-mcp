@@ -7,17 +7,21 @@ pglast to replace non-allowlisted column references with type-preserving
 placeholders, then executes the rewritten SQL against the database.
 
 Usage:
-    python tools/sanitized_db_mcp/server.py
+    python -m sanitized_db_mcp.server
 
 Environment variables:
     ALLOWLIST_PATH      Path to allowlist.yaml (required)
     RENDER_POSTGRES_ID  Render Postgres instance ID (optional)
     RENDER_API_KEY      Render API key (optional)
     DATABASE_URL        Static connection string fallback (optional)
+    MCP_TRANSPORT       Transport mode: stdio (default) or sse
+    PORT                HTTP port for SSE server (default 8000)
+    MCP_API_KEY         Bearer token for SSE authentication (recommended)
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -153,14 +157,51 @@ def create_server() -> tuple[Server, Allowlist]:
     return server, allowlist
 
 
-async def main():
-    """Run the MCP server."""
-    server, _allowlist = create_server()
+async def _run_stdio(server: Server) -> None:
+    """Run the server with stdio transport."""
     async with stdio_server() as (read_stream, write_stream):
-        await server.run(read_stream, write_stream, server.create_initialization_options())
+        await server.run(
+            read_stream, write_stream, server.create_initialization_options()
+        )
+
+
+def _run_sse(server: Server) -> None:
+    """Run the server with SSE transport over HTTP."""
+    from .transport import create_sse_app
+
+    import uvicorn
+
+    port = int(os.environ.get("PORT", "8000"))
+    app = create_sse_app(server)
+
+    logger.info("Starting SSE server on 0.0.0.0:%d", port)
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=port,
+        log_level="info",
+        timeout_graceful_shutdown=20,
+    )
+
+
+def main() -> None:
+    """Run the MCP server.
+
+    Dispatches to stdio or SSE transport based on MCP_TRANSPORT env var.
+    """
+    transport = os.environ.get("MCP_TRANSPORT", "stdio").lower().strip()
+
+    server, _allowlist = create_server()
+
+    if transport == "stdio":
+        asyncio.run(_run_stdio(server))
+    elif transport == "sse":
+        _run_sse(server)
+    else:
+        raise ConfigurationError(
+            f"Unknown MCP_TRANSPORT: {transport!r}. Valid options: stdio, sse"
+        )
 
 
 if __name__ == "__main__":
-    import asyncio
-
-    asyncio.run(main())
+    main()

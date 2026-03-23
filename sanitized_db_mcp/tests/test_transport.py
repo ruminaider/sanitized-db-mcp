@@ -182,11 +182,13 @@ class TestTransportDispatch:
         monkeypatch.setenv("MCP_API_KEY", "test")
 
         from sanitized_db_mcp.server import main
-        from unittest.mock import patch
+        from unittest.mock import patch, MagicMock
 
-        # Mock uvicorn.run so it doesn't actually start a server
-        with patch("sanitized_db_mcp.transport.uvicorn") as mock_uvicorn:
-            mock_uvicorn.run = lambda *a, **kw: None
+        # Mock uvicorn.run so it doesn't actually start a server.
+        # uvicorn is lazy-imported inside _run_sse(), so we patch the
+        # import mechanism to return a mock module.
+        mock_uvicorn = MagicMock()
+        with patch.dict("sys.modules", {"uvicorn": mock_uvicorn}):
             main()  # should not raise
 
     def test_default_transport_is_stdio(self, monkeypatch, tmp_path):
