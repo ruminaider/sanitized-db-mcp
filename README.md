@@ -31,6 +31,8 @@ Pick one of the four methods below and add the config to your `.mcp.json`.
 
 #### Method 1: uvx (recommended — zero install)
 
+`uvx` runs the package in an isolated environment with no permanent installation and no dependency conflicts. Unlike pip, there is nothing to install or manage. Unlike Docker, there are no volume mounts or path mappings to configure.
+
 ```json
 {
   "sanitized-db": {
