@@ -172,7 +172,8 @@ def _run_sse(server: Server) -> None:
     import uvicorn
 
     port = int(os.environ.get("PORT", "8000"))
-    app = create_sse_app(server)
+    api_key = os.environ.get("MCP_API_KEY") or None
+    app = create_sse_app(server, api_key=api_key)
 
     logger.info("Starting SSE server on 0.0.0.0:%d", port)
     uvicorn.run(

@@ -111,45 +111,38 @@ class TestCreateSseApp:
         from sanitized_db_mcp.transport import create_sse_app
 
         app = create_sse_app(self._make_mock_server())
-        # ASGI apps are callable with (scope, receive, send)
         assert callable(app)
 
-    def test_health_accessible_without_auth(self, monkeypatch):
+    def test_health_accessible_without_auth(self):
         from sanitized_db_mcp.transport import create_sse_app
 
-        monkeypatch.setenv("MCP_API_KEY", "test-key")
-        app = create_sse_app(self._make_mock_server())
+        app = create_sse_app(self._make_mock_server(), api_key="test-key")
         client = TestClient(app)
         resp = client.get("/health")
         assert resp.status_code == 200
         assert resp.json() == {"status": "ok"}
 
-    def test_sse_endpoint_requires_auth_when_key_set(self, monkeypatch):
+    def test_sse_endpoint_requires_auth_when_key_set(self):
         from sanitized_db_mcp.transport import create_sse_app
 
-        monkeypatch.setenv("MCP_API_KEY", "test-key")
-        app = create_sse_app(self._make_mock_server())
+        app = create_sse_app(self._make_mock_server(), api_key="test-key")
         client = TestClient(app)
         resp = client.get("/sse")
         assert resp.status_code == 401
 
-    def test_messages_endpoint_requires_auth_when_key_set(self, monkeypatch):
+    def test_messages_endpoint_requires_auth_when_key_set(self):
         from sanitized_db_mcp.transport import create_sse_app
 
-        monkeypatch.setenv("MCP_API_KEY", "test-key")
-        app = create_sse_app(self._make_mock_server())
+        app = create_sse_app(self._make_mock_server(), api_key="test-key")
         client = TestClient(app)
         resp = client.post("/messages/")
         assert resp.status_code == 401
 
-    def test_no_auth_when_key_unset(self, monkeypatch):
+    def test_no_auth_when_key_unset(self):
         from sanitized_db_mcp.transport import create_sse_app
 
-        monkeypatch.delenv("MCP_API_KEY", raising=False)
         app = create_sse_app(self._make_mock_server())
         client = TestClient(app)
-        # Verify /health works without auth — confirms no middleware is applied
-        # (We can't hit /sse because connect_sse blocks waiting for MCP session)
         resp = client.get("/health")
         assert resp.status_code == 200
 
@@ -158,20 +151,27 @@ class TestCreateSseApp:
 # Transport dispatch (server.py main)
 # ---------------------------------------------------------------------------
 
+_MINIMAL_ALLOWLIST_YAML = (
+    "tables:\n  test_table:\n    id:\n      type: integer\n      placeholder: '0'\n"
+    "allowed_functions:\n  - COUNT\n"
+)
+
+
+@pytest.fixture()
+def allowlist_env(monkeypatch, tmp_path):
+    """Write a minimal allowlist and set ALLOWLIST_PATH."""
+    f = tmp_path / "allowlist.yaml"
+    f.write_text(_MINIMAL_ALLOWLIST_YAML)
+    monkeypatch.setenv("ALLOWLIST_PATH", str(f))
+
+
 class TestTransportDispatch:
     """Tests for MCP_TRANSPORT parsing and dispatch in server.main()."""
 
-    def test_unknown_transport_raises(self, monkeypatch, tmp_path):
+    def test_unknown_transport_raises(self, monkeypatch, allowlist_env):
         """Unknown MCP_TRANSPORT value raises ConfigurationError."""
         from sanitized_db_mcp.errors import ConfigurationError
 
-        # create_server() needs ALLOWLIST_PATH — provide a minimal one
-        allowlist_file = tmp_path / "allowlist.yaml"
-        allowlist_file.write_text(
-            "tables:\n  test_table:\n    id:\n      type: integer\n      placeholder: '0'\n"
-            "allowed_functions:\n  - COUNT\n"
-        )
-        monkeypatch.setenv("ALLOWLIST_PATH", str(allowlist_file))
         monkeypatch.setenv("MCP_TRANSPORT", "bogus")
 
         from sanitized_db_mcp.server import main
@@ -179,42 +179,26 @@ class TestTransportDispatch:
         with pytest.raises(ConfigurationError, match="Unknown MCP_TRANSPORT"):
             main()
 
-    def test_transport_case_insensitive(self, monkeypatch, tmp_path):
+    def test_transport_case_insensitive(self, monkeypatch, allowlist_env):
         """MCP_TRANSPORT=SSE (uppercase) should be accepted."""
-        allowlist_file = tmp_path / "allowlist.yaml"
-        allowlist_file.write_text(
-            "tables:\n  test_table:\n    id:\n      type: integer\n      placeholder: '0'\n"
-            "allowed_functions:\n  - COUNT\n"
-        )
-        monkeypatch.setenv("ALLOWLIST_PATH", str(allowlist_file))
         monkeypatch.setenv("MCP_TRANSPORT", "SSE")
         monkeypatch.setenv("MCP_API_KEY", "test")
 
         from sanitized_db_mcp.server import main
         from unittest.mock import patch, MagicMock
 
-        # Mock uvicorn.run so it doesn't actually start a server.
-        # uvicorn is lazy-imported inside _run_sse(), so we patch the
-        # import mechanism to return a mock module.
+        # uvicorn is lazy-imported inside _run_sse(), so patch sys.modules
         mock_uvicorn = MagicMock()
         with patch.dict("sys.modules", {"uvicorn": mock_uvicorn}):
             main()  # should not raise
 
-    def test_default_transport_is_stdio(self, monkeypatch, tmp_path):
+    def test_default_transport_is_stdio(self, monkeypatch, allowlist_env):
         """Unset MCP_TRANSPORT defaults to stdio."""
-        allowlist_file = tmp_path / "allowlist.yaml"
-        allowlist_file.write_text(
-            "tables:\n  test_table:\n    id:\n      type: integer\n      placeholder: '0'\n"
-            "allowed_functions:\n  - COUNT\n"
-        )
-        monkeypatch.setenv("ALLOWLIST_PATH", str(allowlist_file))
         monkeypatch.delenv("MCP_TRANSPORT", raising=False)
 
         from sanitized_db_mcp.server import main
         from unittest.mock import patch
 
-        # Mock asyncio.run to capture the coroutine without executing
         with patch("sanitized_db_mcp.server.asyncio") as mock_asyncio:
-            mock_asyncio.run = lambda coro: coro.close()  # close the coroutine cleanly
+            mock_asyncio.run = lambda coro: coro.close()
             main()
-            # If we got here without error, stdio was selected (default)

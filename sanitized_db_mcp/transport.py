@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import hmac
 import logging
-import os
 
 from mcp.server import Server
 from mcp.server.sse import SseServerTransport
@@ -47,7 +46,7 @@ class BearerAuthMiddleware:
 
     def __init__(self, app, api_key: str) -> None:
         self.app = app
-        self.api_key = api_key
+        self._expected = f"Bearer {api_key}"
 
     async def __call__(self, scope, receive, send) -> None:
         if scope["type"] != "http":
@@ -58,11 +57,13 @@ class BearerAuthMiddleware:
             await self.app(scope, receive, send)
             return
 
-        headers = dict(scope.get("headers", []))
-        auth = headers.get(b"authorization", b"").decode()
-        expected = f"Bearer {self.api_key}"
+        auth = b""
+        for key, val in scope.get("headers", []):
+            if key == b"authorization":
+                auth = val
+                break
 
-        if not hmac.compare_digest(auth, expected):
+        if not hmac.compare_digest(auth.decode(), self._expected):
             response = JSONResponse(
                 {"error": "Unauthorized"},
                 status_code=401,
@@ -89,12 +90,15 @@ async def health_check(request: Request) -> JSONResponse:
 # ---------------------------------------------------------------------------
 
 
-def create_sse_app(server: Server) -> Starlette | BearerAuthMiddleware:
+def create_sse_app(
+    server: Server, *, api_key: str | None = None
+) -> Starlette | BearerAuthMiddleware:
     """Build the Starlette ASGI app for SSE transport.
 
-    Returns the app wrapped with BearerAuthMiddleware if MCP_API_KEY is set.
+    Returns the app wrapped with BearerAuthMiddleware when *api_key* is provided.
     """
     sse_transport = SseServerTransport("/messages/")
+    init_options = server.create_initialization_options()
 
     async def handle_sse(request: Request) -> Response:
         # _send is a private attr on starlette Request; connect_sse needs
@@ -102,9 +106,7 @@ def create_sse_app(server: Server) -> Starlette | BearerAuthMiddleware:
         async with sse_transport.connect_sse(
             request.scope, request.receive, request._send
         ) as (read_stream, write_stream):
-            await server.run(
-                read_stream, write_stream, server.create_initialization_options()
-            )
+            await server.run(read_stream, write_stream, init_options)
         return Response()
 
     app = Starlette(
@@ -115,7 +117,6 @@ def create_sse_app(server: Server) -> Starlette | BearerAuthMiddleware:
         ],
     )
 
-    api_key = os.environ.get("MCP_API_KEY")
     if api_key:
         logger.info("Bearer token authentication enabled")
         return BearerAuthMiddleware(app, api_key)
