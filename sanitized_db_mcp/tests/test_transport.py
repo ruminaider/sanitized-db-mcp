@@ -123,6 +123,12 @@ class TestBearerAuthMiddleware:
         assert len(auth_records) >= 1
         assert auth_records[0].levelno == logging.DEBUG
 
+    def test_bearer_prefix_with_empty_token_returns_401(self):
+        """'Bearer ' with no token after it should be rejected."""
+        client = TestClient(_make_app(api_key="secret-key"))
+        resp = client.get("/test", headers={"Authorization": "Bearer "})
+        assert resp.status_code == 401
+
     def test_lifespan_scope_bypasses_auth(self):
         """Non-HTTP scopes (lifespan) must pass through without auth check."""
         import asyncio
