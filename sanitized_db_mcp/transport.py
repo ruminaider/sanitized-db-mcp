@@ -12,6 +12,7 @@ Requires the [sse] optional extra:
 
 from __future__ import annotations
 
+import asyncio
 import hmac
 import logging
 import time
@@ -42,6 +43,15 @@ def _is_expected_disconnect(exc: BaseException) -> bool:
         return True
     if isinstance(exc, BaseExceptionGroup):
         return all(_is_expected_disconnect(e) for e in exc.exceptions)
+    return False
+
+
+def _contains_timeout(exc: BaseException) -> bool:
+    """Return True if *exc* (or any sub-exception in a group) is a TimeoutError."""
+    if isinstance(exc, TimeoutError):
+        return True
+    if isinstance(exc, BaseExceptionGroup):
+        return any(_contains_timeout(e) for e in exc.exceptions)
     return False
 
 
@@ -120,7 +130,10 @@ async def health_check(request: Request) -> JSONResponse:
 
 
 def create_sse_app(
-    server: Server, *, api_key: str | None = None
+    server: Server,
+    *,
+    api_key: str | None = None,
+    session_timeout: int | None = None,
 ) -> Starlette | BearerAuthMiddleware:
     """Build the Starlette ASGI app for SSE transport.
 
@@ -136,11 +149,19 @@ def create_sse_app(
             async with sse_transport.connect_sse(
                 request.scope, request.receive, request._send
             ) as (read_stream, write_stream):
-                await server.run(read_stream, write_stream, init_options)
+                if session_timeout is not None:
+                    async with asyncio.timeout(session_timeout):
+                        await server.run(read_stream, write_stream, init_options)
+                else:
+                    await server.run(read_stream, write_stream, init_options)
+        except TimeoutError:
+            logger.info("SSE session closed (timeout after %ds)", session_timeout)
         except BaseException as exc:
             if isinstance(exc, (KeyboardInterrupt, SystemExit, GeneratorExit)):
                 raise
-            if _is_expected_disconnect(exc):
+            if _contains_timeout(exc):
+                logger.info("SSE session closed (timeout after %ds)", session_timeout)
+            elif _is_expected_disconnect(exc):
                 logger.debug("SSE session closed (client disconnect)")
             else:
                 logger.error("SSE session error (unexpected)", exc_info=True)

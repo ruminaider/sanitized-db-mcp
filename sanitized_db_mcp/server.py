@@ -17,6 +17,8 @@ Environment variables:
     MCP_TRANSPORT       Transport mode: stdio (default) or sse
     PORT                HTTP port for SSE server (default 8000)
     MCP_API_KEY         Bearer token for SSE authentication (recommended)
+    MCP_MAX_CONNECTIONS Max concurrent connections for SSE (default: unlimited)
+    MCP_SESSION_TIMEOUT Max SSE session duration in seconds (default: unlimited)
 """
 
 from __future__ import annotations
@@ -199,7 +201,36 @@ def _run_sse(server: Server) -> None:
                 "Remove the whitespace or set the key without it."
             )
     api_key = api_key_raw  # None if unset, validated non-empty above
-    app = create_sse_app(server, api_key=api_key)
+
+    max_conn_raw = os.environ.get("MCP_MAX_CONNECTIONS")
+    max_connections: int | None = None
+    if max_conn_raw is not None:
+        try:
+            max_connections = int(max_conn_raw)
+        except ValueError:
+            raise ConfigurationError(
+                f"MCP_MAX_CONNECTIONS must be an integer, got {max_conn_raw!r}"
+            ) from None
+        if max_connections < 1:
+            raise ConfigurationError(
+                f"MCP_MAX_CONNECTIONS must be positive, got {max_connections}"
+            )
+
+    session_timeout_raw = os.environ.get("MCP_SESSION_TIMEOUT")
+    session_timeout: int | None = None
+    if session_timeout_raw is not None:
+        try:
+            session_timeout = int(session_timeout_raw)
+        except ValueError:
+            raise ConfigurationError(
+                f"MCP_SESSION_TIMEOUT must be an integer, got {session_timeout_raw!r}"
+            ) from None
+        if session_timeout < 1:
+            raise ConfigurationError(
+                f"MCP_SESSION_TIMEOUT must be positive, got {session_timeout}"
+            )
+
+    app = create_sse_app(server, api_key=api_key, session_timeout=session_timeout)
 
     logger.info("Starting SSE server on 0.0.0.0:%d", port)
     uvicorn.run(
@@ -208,6 +239,7 @@ def _run_sse(server: Server) -> None:
         port=port,
         log_level="info",
         timeout_graceful_shutdown=20,
+        limit_concurrency=max_connections,
     )
 
 

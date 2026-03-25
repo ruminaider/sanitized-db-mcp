@@ -352,6 +352,50 @@ class TestHandleSseErrorHandling:
         assert len(sse_records) >= 1
         assert sse_records[0].levelno == logging.DEBUG
 
+    def test_session_timeout_closes_connection(self):
+        """Session that exceeds timeout should be closed gracefully (no 500)."""
+        import asyncio
+        from unittest.mock import AsyncMock, patch
+        from sanitized_db_mcp.transport import create_sse_app
+        from mcp.server import Server
+
+        server = Server("test-server")
+        app = create_sse_app(server, session_timeout=0.01)
+
+        # Make server.run block forever so the timeout fires
+        async def block_forever(*args, **kwargs):
+            await asyncio.sleep(3600)
+
+        server.run = AsyncMock(side_effect=block_forever)
+
+        client = TestClient(app, raise_server_exceptions=False)
+        resp = client.get("/sse")
+        assert resp.status_code < 500
+
+    def test_session_timeout_is_logged(self, caplog):
+        """Session timeout should be logged at INFO level."""
+        import asyncio
+        import logging
+        from unittest.mock import AsyncMock
+        from sanitized_db_mcp.transport import create_sse_app
+        from mcp.server import Server
+
+        server = Server("test-server")
+        app = create_sse_app(server, session_timeout=0.01)
+
+        async def block_forever(*args, **kwargs):
+            await asyncio.sleep(3600)
+
+        server.run = AsyncMock(side_effect=block_forever)
+
+        client = TestClient(app, raise_server_exceptions=False)
+        with caplog.at_level(logging.DEBUG, logger="sanitized_db_mcp"):
+            client.get("/sse")
+
+        timeout_records = [r for r in caplog.records if "timeout" in r.message.lower()]
+        assert len(timeout_records) >= 1
+        assert timeout_records[0].levelno == logging.INFO
+
 
 # ---------------------------------------------------------------------------
 # Transport dispatch (server.py main)
@@ -506,3 +550,124 @@ class TestTransportDispatch:
         with patch.dict("sys.modules", {"uvicorn": None}):
             with pytest.raises(ImportError, match="pip install"):
                 main()
+
+    def test_max_connections_passed_to_uvicorn(self, monkeypatch, allowlist_env):
+        """MCP_MAX_CONNECTIONS=50 should be forwarded as limit_concurrency."""
+        monkeypatch.setenv("MCP_TRANSPORT", "sse")
+        monkeypatch.setenv("MCP_API_KEY", "test-key-long-enough")
+        monkeypatch.setenv("MCP_MAX_CONNECTIONS", "50")
+
+        from sanitized_db_mcp.server import main
+        from unittest.mock import patch, MagicMock
+
+        mock_uvicorn_run = MagicMock()
+        with patch("uvicorn.run", mock_uvicorn_run):
+            main()
+
+        call_kwargs = mock_uvicorn_run.call_args[1]
+        assert call_kwargs["limit_concurrency"] == 50
+
+    def test_max_connections_defaults_to_none(self, monkeypatch, allowlist_env):
+        """Unset MCP_MAX_CONNECTIONS should leave limit_concurrency as None."""
+        monkeypatch.setenv("MCP_TRANSPORT", "sse")
+        monkeypatch.setenv("MCP_API_KEY", "test-key-long-enough")
+        monkeypatch.delenv("MCP_MAX_CONNECTIONS", raising=False)
+
+        from sanitized_db_mcp.server import main
+        from unittest.mock import patch, MagicMock
+
+        mock_uvicorn_run = MagicMock()
+        with patch("uvicorn.run", mock_uvicorn_run):
+            main()
+
+        call_kwargs = mock_uvicorn_run.call_args[1]
+        assert "limit_concurrency" in call_kwargs
+        assert call_kwargs["limit_concurrency"] is None
+
+    def test_invalid_max_connections_raises(self, monkeypatch, allowlist_env):
+        """MCP_MAX_CONNECTIONS='abc' should raise ConfigurationError."""
+        from sanitized_db_mcp.errors import ConfigurationError
+
+        monkeypatch.setenv("MCP_TRANSPORT", "sse")
+        monkeypatch.setenv("MCP_API_KEY", "test-key-long-enough")
+        monkeypatch.setenv("MCP_MAX_CONNECTIONS", "abc")
+
+        from sanitized_db_mcp.server import main
+
+        with pytest.raises(ConfigurationError, match="MCP_MAX_CONNECTIONS"):
+            main()
+
+    def test_zero_max_connections_raises(self, monkeypatch, allowlist_env):
+        """MCP_MAX_CONNECTIONS='0' should raise ConfigurationError (must be positive)."""
+        from sanitized_db_mcp.errors import ConfigurationError
+
+        monkeypatch.setenv("MCP_TRANSPORT", "sse")
+        monkeypatch.setenv("MCP_API_KEY", "test-key-long-enough")
+        monkeypatch.setenv("MCP_MAX_CONNECTIONS", "0")
+
+        from sanitized_db_mcp.server import main
+
+        with pytest.raises(ConfigurationError, match="MCP_MAX_CONNECTIONS"):
+            main()
+
+    def test_session_timeout_passed_to_app(self, monkeypatch, allowlist_env):
+        """MCP_SESSION_TIMEOUT=3600 should be forwarded to create_sse_app."""
+        monkeypatch.setenv("MCP_TRANSPORT", "sse")
+        monkeypatch.setenv("MCP_API_KEY", "test-key-long-enough")
+        monkeypatch.setenv("MCP_SESSION_TIMEOUT", "3600")
+
+        from sanitized_db_mcp.server import main
+        from unittest.mock import patch, MagicMock
+
+        mock_create_sse_app = MagicMock()
+        mock_uvicorn_run = MagicMock()
+        with patch("sanitized_db_mcp.transport.create_sse_app", mock_create_sse_app), \
+             patch("uvicorn.run", mock_uvicorn_run):
+            main()
+
+        call_kwargs = mock_create_sse_app.call_args[1]
+        assert call_kwargs["session_timeout"] == 3600
+
+    def test_session_timeout_defaults_to_none(self, monkeypatch, allowlist_env):
+        """Unset MCP_SESSION_TIMEOUT should pass session_timeout=None."""
+        monkeypatch.setenv("MCP_TRANSPORT", "sse")
+        monkeypatch.setenv("MCP_API_KEY", "test-key-long-enough")
+        monkeypatch.delenv("MCP_SESSION_TIMEOUT", raising=False)
+
+        from sanitized_db_mcp.server import main
+        from unittest.mock import patch, MagicMock
+
+        mock_create_sse_app = MagicMock()
+        mock_uvicorn_run = MagicMock()
+        with patch("sanitized_db_mcp.transport.create_sse_app", mock_create_sse_app), \
+             patch("uvicorn.run", mock_uvicorn_run):
+            main()
+
+        call_kwargs = mock_create_sse_app.call_args[1]
+        assert call_kwargs["session_timeout"] is None
+
+    def test_invalid_session_timeout_raises(self, monkeypatch, allowlist_env):
+        """MCP_SESSION_TIMEOUT='abc' should raise ConfigurationError."""
+        from sanitized_db_mcp.errors import ConfigurationError
+
+        monkeypatch.setenv("MCP_TRANSPORT", "sse")
+        monkeypatch.setenv("MCP_API_KEY", "test-key-long-enough")
+        monkeypatch.setenv("MCP_SESSION_TIMEOUT", "abc")
+
+        from sanitized_db_mcp.server import main
+
+        with pytest.raises(ConfigurationError, match="MCP_SESSION_TIMEOUT"):
+            main()
+
+    def test_zero_session_timeout_raises(self, monkeypatch, allowlist_env):
+        """MCP_SESSION_TIMEOUT='0' should raise ConfigurationError (must be positive)."""
+        from sanitized_db_mcp.errors import ConfigurationError
+
+        monkeypatch.setenv("MCP_TRANSPORT", "sse")
+        monkeypatch.setenv("MCP_API_KEY", "test-key-long-enough")
+        monkeypatch.setenv("MCP_SESSION_TIMEOUT", "0")
+
+        from sanitized_db_mcp.server import main
+
+        with pytest.raises(ConfigurationError, match="MCP_SESSION_TIMEOUT"):
+            main()
