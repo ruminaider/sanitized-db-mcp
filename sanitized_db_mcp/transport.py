@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hmac
 import logging
+import time
 
 from anyio import BrokenResourceError, ClosedResourceError
 from mcp.server import Server
@@ -48,6 +49,8 @@ class BearerAuthMiddleware:
     def __init__(self, app, api_key: str) -> None:
         self.app = app
         self._expected = f"Bearer {api_key}".encode()
+        self._fail_count = 0
+        self._last_fail_summary = 0.0
 
     async def __call__(self, scope, receive, send) -> None:
         if scope["type"] != "http":
@@ -65,6 +68,21 @@ class BearerAuthMiddleware:
                 break
 
         if not hmac.compare_digest(auth, self._expected):
+            self._fail_count += 1
+            now = time.monotonic()
+            if now - self._last_fail_summary >= 60:
+                if self._fail_count > 1:
+                    logger.warning(
+                        "Authentication failed: %d attempts in last 60s",
+                        self._fail_count,
+                    )
+                self._fail_count = 0
+                self._last_fail_summary = now
+            logger.debug(
+                "Authentication failed for %s %s",
+                scope.get("method", "?"),
+                scope["path"][:200],
+            )
             response = JSONResponse(
                 {"error": "Unauthorized"},
                 status_code=401,

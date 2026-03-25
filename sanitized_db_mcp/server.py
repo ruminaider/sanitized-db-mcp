@@ -181,7 +181,18 @@ def _run_sse(server: Server) -> None:
         raise ConfigurationError(
             f"PORT must be between 1 and 65535, got {port}"
         )
-    api_key = os.environ.get("MCP_API_KEY") or None
+    api_key_raw = os.environ.get("MCP_API_KEY")
+    if api_key_raw is not None:
+        if not api_key_raw.strip():
+            raise ConfigurationError(
+                "MCP_API_KEY is set but empty. Provide a real key or unset it entirely."
+            )
+        if api_key_raw != api_key_raw.strip():
+            raise ConfigurationError(
+                "MCP_API_KEY has leading/trailing whitespace. "
+                "Remove the whitespace or set the key without it."
+            )
+    api_key = api_key_raw if api_key_raw else None
     app = create_sse_app(server, api_key=api_key)
 
     logger.info("Starting SSE server on 0.0.0.0:%d", port)

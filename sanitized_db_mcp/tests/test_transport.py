@@ -110,6 +110,19 @@ class TestBearerAuthMiddleware:
         resp = client.get("/test")  # no auth header, no middleware
         assert resp.status_code == 200
 
+    def test_failed_auth_is_logged(self, caplog):
+        """Failed auth attempt should be logged at DEBUG level."""
+        import logging
+
+        client = TestClient(_make_app(api_key="secret-key"))
+
+        with caplog.at_level(logging.DEBUG, logger="sanitized_db_mcp"):
+            client.get("/test", headers={"Authorization": "Bearer wrong-key"})
+
+        auth_records = [r for r in caplog.records if "Authentication failed" in r.message]
+        assert len(auth_records) >= 1
+        assert auth_records[0].levelno == logging.DEBUG
+
 
 # ---------------------------------------------------------------------------
 # Health endpoint
@@ -358,4 +371,40 @@ class TestTransportDispatch:
         from sanitized_db_mcp.server import main
 
         with pytest.raises(ConfigurationError, match="PORT"):
+            main()
+
+    def test_empty_api_key_raises(self, monkeypatch, allowlist_env):
+        """MCP_API_KEY='' should raise ConfigurationError."""
+        from sanitized_db_mcp.errors import ConfigurationError
+
+        monkeypatch.setenv("MCP_TRANSPORT", "sse")
+        monkeypatch.setenv("MCP_API_KEY", "")
+
+        from sanitized_db_mcp.server import main
+
+        with pytest.raises(ConfigurationError, match="MCP_API_KEY"):
+            main()
+
+    def test_whitespace_only_api_key_raises(self, monkeypatch, allowlist_env):
+        """MCP_API_KEY='   ' should raise ConfigurationError."""
+        from sanitized_db_mcp.errors import ConfigurationError
+
+        monkeypatch.setenv("MCP_TRANSPORT", "sse")
+        monkeypatch.setenv("MCP_API_KEY", "   ")
+
+        from sanitized_db_mcp.server import main
+
+        with pytest.raises(ConfigurationError, match="MCP_API_KEY"):
+            main()
+
+    def test_api_key_with_leading_trailing_whitespace_raises(self, monkeypatch, allowlist_env):
+        """MCP_API_KEY='my-secret-key ' should raise ConfigurationError."""
+        from sanitized_db_mcp.errors import ConfigurationError
+
+        monkeypatch.setenv("MCP_TRANSPORT", "sse")
+        monkeypatch.setenv("MCP_API_KEY", "my-secret-key ")
+
+        from sanitized_db_mcp.server import main
+
+        with pytest.raises(ConfigurationError, match="whitespace"):
             main()
