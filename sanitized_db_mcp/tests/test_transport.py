@@ -255,12 +255,14 @@ class TestCreateSseApp:
         assert resp.status_code == 401
 
     def test_no_auth_when_key_unset(self):
-        """Without api_key, auth-gated endpoints should be accessible."""
+        """Without api_key, auth-gated endpoints should be accessible (no 401)."""
         from sanitized_db_mcp.transport import create_sse_app
 
         app = create_sse_app(self._make_mock_server())
         client = TestClient(app, raise_server_exceptions=False)
-        resp = client.get("/sse")
+        # Use /messages/ POST (returns immediately) instead of /sse GET
+        # (which opens a long-lived SSE stream that hangs the test).
+        resp = client.post("/messages/")
         assert resp.status_code != 401
 
 
