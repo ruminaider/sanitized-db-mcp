@@ -57,7 +57,7 @@ class BearerAuthMiddleware:
             await self.app(scope, receive, send)
             return
 
-        if scope["path"] == "/health":
+        if scope["path"] in ("/health", "/health/"):
             await self.app(scope, receive, send)
             return
 

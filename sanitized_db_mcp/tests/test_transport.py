@@ -155,6 +155,40 @@ class TestBearerAuthMiddleware:
         asyncio.run(run())
         assert passed_through == ["lifespan"]
 
+    def test_health_trailing_slash_bypasses_auth(self):
+        """'/health/' should also bypass auth for load balancer robustness."""
+        import asyncio
+        from sanitized_db_mcp.transport import BearerAuthMiddleware
+        from starlette.responses import JSONResponse
+
+        async def inner_app(scope, receive, send):
+            response = JSONResponse({"status": "ok"})
+            await response(scope, receive, send)
+
+        middleware = BearerAuthMiddleware(inner_app, "secret-key")
+
+        async def run():
+            status_codes = []
+
+            async def receive():
+                return {"type": "http.request", "body": b""}
+
+            async def send(message):
+                if message["type"] == "http.response.start":
+                    status_codes.append(message["status"])
+
+            scope = {
+                "type": "http",
+                "path": "/health/",
+                "headers": [],
+                "method": "GET",
+            }
+            await middleware(scope, receive, send)
+            return status_codes[0]
+
+        status = asyncio.run(run())
+        assert status == 200
+
 
 # ---------------------------------------------------------------------------
 # Health endpoint
