@@ -123,6 +123,32 @@ class TestBearerAuthMiddleware:
         assert len(auth_records) >= 1
         assert auth_records[0].levelno == logging.DEBUG
 
+    def test_lifespan_scope_bypasses_auth(self):
+        """Non-HTTP scopes (lifespan) must pass through without auth check."""
+        import asyncio
+        from sanitized_db_mcp.transport import BearerAuthMiddleware
+
+        passed_through = []
+
+        async def inner_app(scope, receive, send):
+            passed_through.append(scope["type"])
+
+        middleware = BearerAuthMiddleware(inner_app, "secret-key")
+
+        async def run():
+            scope = {"type": "lifespan"}
+
+            async def receive():
+                return {"type": "lifespan.startup"}
+
+            async def send(message):
+                pass
+
+            await middleware(scope, receive, send)
+
+        asyncio.run(run())
+        assert passed_through == ["lifespan"]
+
 
 # ---------------------------------------------------------------------------
 # Health endpoint
@@ -153,11 +179,15 @@ class TestCreateSseApp:
         from mcp.server import Server
         return Server("test-server")
 
-    def test_returns_asgi_app(self):
+    def test_returns_starlette_without_key(self):
         from sanitized_db_mcp.transport import create_sse_app
-
         app = create_sse_app(self._make_mock_server())
-        assert callable(app)
+        assert isinstance(app, Starlette)
+
+    def test_returns_middleware_with_key(self):
+        from sanitized_db_mcp.transport import create_sse_app, BearerAuthMiddleware
+        app = create_sse_app(self._make_mock_server(), api_key="test-key")
+        assert isinstance(app, BearerAuthMiddleware)
 
     def test_health_accessible_without_auth(self):
         from sanitized_db_mcp.transport import create_sse_app
@@ -185,12 +215,13 @@ class TestCreateSseApp:
         assert resp.status_code == 401
 
     def test_no_auth_when_key_unset(self):
+        """Without api_key, auth-gated endpoints should be accessible."""
         from sanitized_db_mcp.transport import create_sse_app
 
         app = create_sse_app(self._make_mock_server())
-        client = TestClient(app)
-        resp = client.get("/health")
-        assert resp.status_code == 200
+        client = TestClient(app, raise_server_exceptions=False)
+        resp = client.get("/sse")
+        assert resp.status_code != 401
 
 
 # ---------------------------------------------------------------------------
@@ -311,17 +342,28 @@ class TestTransportDispatch:
             main()
 
     def test_transport_case_insensitive(self, monkeypatch, allowlist_env):
-        """MCP_TRANSPORT=SSE (uppercase) should be accepted."""
+        """MCP_TRANSPORT=SSE (uppercase) should dispatch to _run_sse."""
         monkeypatch.setenv("MCP_TRANSPORT", "SSE")
-        monkeypatch.setenv("MCP_API_KEY", "test")
 
         from sanitized_db_mcp.server import main
         from unittest.mock import patch, MagicMock
 
-        # uvicorn is lazy-imported inside _run_sse(), so patch sys.modules
-        mock_uvicorn = MagicMock()
-        with patch.dict("sys.modules", {"uvicorn": mock_uvicorn}):
-            main()  # should not raise
+        mock_run_sse = MagicMock()
+        with patch("sanitized_db_mcp.server._run_sse", mock_run_sse):
+            main()
+        mock_run_sse.assert_called_once()
+
+    def test_transport_whitespace_stripped(self, monkeypatch, allowlist_env):
+        """MCP_TRANSPORT=' sse\\n' should be accepted after strip()."""
+        monkeypatch.setenv("MCP_TRANSPORT", " sse\n")
+
+        from sanitized_db_mcp.server import main
+        from unittest.mock import patch, MagicMock
+
+        mock_run_sse = MagicMock()
+        with patch("sanitized_db_mcp.server._run_sse", mock_run_sse):
+            main()
+        mock_run_sse.assert_called_once()
 
     def test_default_transport_is_stdio(self, monkeypatch, allowlist_env):
         """Unset MCP_TRANSPORT defaults to stdio."""
