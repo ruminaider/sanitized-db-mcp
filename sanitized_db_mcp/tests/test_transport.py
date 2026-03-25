@@ -102,7 +102,7 @@ class TestBearerAuthMiddleware:
             await middleware(scope, receive, send)
             return status_codes[0]
 
-        status = asyncio.get_event_loop().run_until_complete(run())
+        status = asyncio.run(run())
         assert status == 401
 
     def test_no_middleware_allows_all(self):
