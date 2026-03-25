@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from starlette.applications import Starlette
 from starlette.requests import Request
@@ -671,3 +673,62 @@ class TestTransportDispatch:
 
         with pytest.raises(ConfigurationError, match="MCP_SESSION_TIMEOUT"):
             main()
+
+
+# ---------------------------------------------------------------------------
+# Audit client identity
+# ---------------------------------------------------------------------------
+
+class TestAuditClientIdentity:
+    """Tests for client identity in audit log entries."""
+
+    def test_audit_entry_includes_all_identity_fields_in_json(self):
+        from sanitized_db_mcp.audit import AuditEntry
+        entry = AuditEntry(
+            original_sql="SELECT 1",
+            client_ip="192.168.1.1",
+            request_id="req-abc-123",
+            session_id="sess-xyz-789",
+            user_agent="claude-code/1.0",
+            transport="sse",
+        )
+        data = json.loads(entry.to_json())
+        assert data["client_ip"] == "192.168.1.1"
+        assert data["request_id"] == "req-abc-123"
+        assert data["session_id"] == "sess-xyz-789"
+        assert data["user_agent"] == "claude-code/1.0"
+        assert data["transport"] == "sse"
+
+    def test_audit_entry_identity_fields_default_to_none(self):
+        from sanitized_db_mcp.audit import AuditEntry
+        entry = AuditEntry(original_sql="SELECT 1")
+        data = json.loads(entry.to_json())
+        assert data["client_ip"] is None
+        assert data["request_id"] is None
+        assert data["session_id"] is None
+        assert data["user_agent"] is None
+        assert data["transport"] is None
+
+    def test_extract_client_ip_from_x_forwarded_for(self):
+        from sanitized_db_mcp.audit import extract_client_ip
+        from unittest.mock import MagicMock
+        request = MagicMock()
+        request.headers = {"x-forwarded-for": "203.0.113.50, 70.41.3.18"}
+        request.client.host = "10.0.0.1"
+        assert extract_client_ip(request) == "203.0.113.50"
+
+    def test_extract_client_ip_falls_back_to_client_host(self):
+        from sanitized_db_mcp.audit import extract_client_ip
+        from unittest.mock import MagicMock
+        request = MagicMock()
+        request.headers = {}
+        request.client.host = "192.168.1.50"
+        assert extract_client_ip(request) == "192.168.1.50"
+
+    def test_extract_client_ip_handles_no_client(self):
+        from sanitized_db_mcp.audit import extract_client_ip
+        from unittest.mock import MagicMock
+        request = MagicMock()
+        request.headers = {}
+        request.client = None
+        assert extract_client_ip(request) is None

@@ -29,6 +29,12 @@ class AuditEntry:
     columns_redacted: list[str] = field(default_factory=list)
     row_count: int | None = None
     execution_time_ms: float | None = None
+    # Client identity fields (HIPAA audit trail)
+    client_ip: str | None = None
+    request_id: str | None = None
+    session_id: str | None = None
+    user_agent: str | None = None
+    transport: str | None = None
 
     def to_json(self) -> str:
         return json.dumps(
@@ -43,9 +49,25 @@ class AuditEntry:
                 "columns_redacted": self.columns_redacted,
                 "row_count": self.row_count,
                 "execution_time_ms": self.execution_time_ms,
+                "client_ip": self.client_ip,
+                "request_id": self.request_id,
+                "session_id": self.session_id,
+                "user_agent": self.user_agent,
+                "transport": self.transport,
             },
             default=str,
         )
+
+
+def extract_client_ip(request) -> str | None:
+    """Extract client IP, respecting reverse proxy headers."""
+    if xff := request.headers.get("x-forwarded-for"):
+        return xff.split(",")[0].strip()
+    if xri := request.headers.get("x-real-ip"):
+        return xri.strip()
+    if request.client:
+        return request.client.host
+    return None
 
 
 def log_query(entry: AuditEntry):

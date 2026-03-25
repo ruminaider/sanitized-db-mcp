@@ -31,11 +31,12 @@ import sys
 import time
 
 from mcp.server import Server
+from mcp.server.lowlevel.server import request_ctx
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
 from .allowlist import Allowlist
-from .audit import AuditEntry, log_query
+from .audit import AuditEntry, extract_client_ip, log_query
 from .connection import execute_query
 from .errors import ConfigurationError, SanitizationError, sanitize_pg_error
 from .sanitizer import sanitize_query
@@ -107,6 +108,21 @@ def create_server() -> tuple[Server, Allowlist]:
             return [TextContent(type="text", text="Error: empty SQL query")]
 
         audit = AuditEntry(original_sql=sql)
+
+        # Enrich audit with client identity from MCP request context
+        try:
+            ctx = request_ctx.get()
+            audit.request_id = str(ctx.request_id) if ctx.request_id else None
+            if ctx.request is not None and hasattr(ctx.request, "headers"):
+                audit.client_ip = extract_client_ip(ctx.request)
+                audit.user_agent = ctx.request.headers.get("user-agent")
+                audit.session_id = getattr(
+                    ctx.request, "query_params", {}
+                ).get("session_id")
+            audit.transport = "sse"
+        except LookupError:
+            audit.transport = "stdio"
+
         start = time.time()
 
         try:
