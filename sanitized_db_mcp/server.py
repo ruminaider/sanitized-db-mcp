@@ -168,7 +168,13 @@ def _run_sse(server: Server) -> None:
     """Run the server with SSE transport over HTTP."""
     from .transport import create_sse_app
 
-    import uvicorn
+    try:
+        import uvicorn
+    except ImportError:
+        raise ImportError(
+            "SSE transport requires uvicorn. "
+            "Install with: pip install 'sanitized-db-mcp[sse]'"
+        ) from None
 
     port_raw = os.environ.get("PORT", "8000")
     try:

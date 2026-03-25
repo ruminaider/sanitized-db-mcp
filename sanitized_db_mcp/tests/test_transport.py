@@ -408,3 +408,15 @@ class TestTransportDispatch:
 
         with pytest.raises(ConfigurationError, match="whitespace"):
             main()
+
+    def test_missing_uvicorn_raises_helpful_error(self, monkeypatch, allowlist_env):
+        """Missing uvicorn should raise ImportError with install hint."""
+        monkeypatch.setenv("MCP_TRANSPORT", "sse")
+        monkeypatch.setenv("MCP_API_KEY", "test-key-long-enough")
+
+        from sanitized_db_mcp.server import main
+        from unittest.mock import patch
+
+        with patch.dict("sys.modules", {"uvicorn": None}):
+            with pytest.raises(ImportError, match="pip install"):
+                main()
