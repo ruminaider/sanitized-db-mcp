@@ -15,6 +15,7 @@ from __future__ import annotations
 import hmac
 import logging
 
+from anyio import BrokenResourceError, ClosedResourceError
 from mcp.server import Server
 from mcp.server.sse import SseServerTransport
 
@@ -100,13 +101,31 @@ def create_sse_app(
     sse_transport = SseServerTransport("/messages/")
     init_options = server.create_initialization_options()
 
+    _EXPECTED_DISCONNECT = (ClosedResourceError, BrokenResourceError, ConnectionError)
+
+    def _is_expected_disconnect(exc: BaseException) -> bool:
+        """Return True if *exc* (or all sub-exceptions in a group) are expected."""
+        if isinstance(exc, _EXPECTED_DISCONNECT):
+            return True
+        if isinstance(exc, BaseExceptionGroup):
+            return all(_is_expected_disconnect(e) for e in exc.exceptions)
+        return False
+
     async def handle_sse(request: Request) -> Response:
         # _send is a private attr on starlette Request; connect_sse needs
         # the raw ASGI send callable. This is the canonical MCP SDK pattern.
-        async with sse_transport.connect_sse(
-            request.scope, request.receive, request._send
-        ) as (read_stream, write_stream):
-            await server.run(read_stream, write_stream, init_options)
+        try:
+            async with sse_transport.connect_sse(
+                request.scope, request.receive, request._send
+            ) as (read_stream, write_stream):
+                await server.run(read_stream, write_stream, init_options)
+        except BaseException as exc:
+            if isinstance(exc, (KeyboardInterrupt, SystemExit, GeneratorExit)):
+                raise
+            if _is_expected_disconnect(exc):
+                logger.debug("SSE session closed (client disconnect)")
+            else:
+                logger.error("SSE session error (unexpected)", exc_info=True)
         return Response()
 
     app = Starlette(

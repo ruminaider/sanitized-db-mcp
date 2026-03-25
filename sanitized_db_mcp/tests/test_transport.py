@@ -181,6 +181,91 @@ class TestCreateSseApp:
 
 
 # ---------------------------------------------------------------------------
+# SSE error handling
+# ---------------------------------------------------------------------------
+
+class TestHandleSseErrorHandling:
+    """Tests that SSE connection errors are handled gracefully."""
+
+    def _make_mock_server(self):
+        from mcp.server import Server
+        return Server("test-server")
+
+    def _make_app_with_failing_server(self, exc_to_raise):
+        """Build an SSE app whose server.run() raises *exc_to_raise*."""
+        from unittest.mock import AsyncMock, patch
+        from sanitized_db_mcp.transport import create_sse_app
+
+        server = self._make_mock_server()
+        app = create_sse_app(server)
+
+        # Patch server.run on the instance so the handler's try/except is exercised.
+        server.run = AsyncMock(side_effect=exc_to_raise)
+        return app
+
+    def test_expected_disconnect_does_not_500(self):
+        """ClosedResourceError (client disconnect) should not produce a 500."""
+        from anyio import ClosedResourceError
+
+        app = self._make_app_with_failing_server(ClosedResourceError())
+        client = TestClient(app, raise_server_exceptions=False)
+
+        resp = client.get("/sse")
+        assert resp.status_code < 500
+
+    def test_expected_disconnect_logs_debug(self, caplog):
+        """ClosedResourceError should log at DEBUG level."""
+        import logging
+        from anyio import ClosedResourceError
+
+        app = self._make_app_with_failing_server(ClosedResourceError())
+        client = TestClient(app, raise_server_exceptions=False)
+
+        with caplog.at_level(logging.DEBUG, logger="sanitized_db_mcp"):
+            client.get("/sse")
+
+        sse_records = [r for r in caplog.records if "SSE session" in r.message]
+        assert len(sse_records) >= 1
+        assert sse_records[0].levelno == logging.DEBUG
+
+    def test_unexpected_error_does_not_500(self):
+        """Unexpected errors should be caught, not produce unhandled 500s."""
+        app = self._make_app_with_failing_server(RuntimeError("boom"))
+        client = TestClient(app, raise_server_exceptions=False)
+
+        resp = client.get("/sse")
+        assert resp.status_code < 500
+
+    def test_unexpected_error_logs_error(self, caplog):
+        """Unexpected errors should log at ERROR level with traceback."""
+        import logging
+
+        app = self._make_app_with_failing_server(RuntimeError("boom"))
+        client = TestClient(app, raise_server_exceptions=False)
+
+        with caplog.at_level(logging.DEBUG, logger="sanitized_db_mcp"):
+            client.get("/sse")
+
+        sse_records = [r for r in caplog.records if "SSE session" in r.message]
+        assert len(sse_records) >= 1
+        assert sse_records[0].levelno == logging.ERROR
+
+    def test_connection_error_logs_debug(self, caplog):
+        """ConnectionError (network flap) should log at DEBUG, not ERROR."""
+        import logging
+
+        app = self._make_app_with_failing_server(ConnectionError("reset"))
+        client = TestClient(app, raise_server_exceptions=False)
+
+        with caplog.at_level(logging.DEBUG, logger="sanitized_db_mcp"):
+            client.get("/sse")
+
+        sse_records = [r for r in caplog.records if "SSE session" in r.message]
+        assert len(sse_records) >= 1
+        assert sse_records[0].levelno == logging.DEBUG
+
+
+# ---------------------------------------------------------------------------
 # Transport dispatch (server.py main)
 # ---------------------------------------------------------------------------
 
