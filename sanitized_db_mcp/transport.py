@@ -33,6 +33,17 @@ except ImportError:
 
 logger = logging.getLogger("sanitized_db_mcp")
 
+_EXPECTED_DISCONNECT = (ClosedResourceError, BrokenResourceError, ConnectionError)
+
+
+def _is_expected_disconnect(exc: BaseException) -> bool:
+    """Return True if *exc* (or all sub-exceptions in a group) are expected."""
+    if isinstance(exc, _EXPECTED_DISCONNECT):
+        return True
+    if isinstance(exc, BaseExceptionGroup):
+        return all(_is_expected_disconnect(e) for e in exc.exceptions)
+    return False
+
 
 # ---------------------------------------------------------------------------
 # Auth middleware
@@ -71,11 +82,10 @@ class BearerAuthMiddleware:
             self._fail_count += 1
             now = time.monotonic()
             if now - self._last_fail_summary >= 60:
-                if self._fail_count > 1:
-                    logger.warning(
-                        "Authentication failed: %d attempts in last 60s",
-                        self._fail_count,
-                    )
+                logger.warning(
+                    "Authentication failed: %d attempt(s) in last 60s",
+                    self._fail_count,
+                )
                 self._fail_count = 0
                 self._last_fail_summary = now
             logger.debug(
@@ -118,16 +128,6 @@ def create_sse_app(
     """
     sse_transport = SseServerTransport("/messages/")
     init_options = server.create_initialization_options()
-
-    _EXPECTED_DISCONNECT = (ClosedResourceError, BrokenResourceError, ConnectionError)
-
-    def _is_expected_disconnect(exc: BaseException) -> bool:
-        """Return True if *exc* (or all sub-exceptions in a group) are expected."""
-        if isinstance(exc, _EXPECTED_DISCONNECT):
-            return True
-        if isinstance(exc, BaseExceptionGroup):
-            return all(_is_expected_disconnect(e) for e in exc.exceptions)
-        return False
 
     async def handle_sse(request: Request) -> Response:
         # _send is a private attr on starlette Request; connect_sse needs

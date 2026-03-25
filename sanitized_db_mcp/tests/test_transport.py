@@ -119,9 +119,11 @@ class TestBearerAuthMiddleware:
         with caplog.at_level(logging.DEBUG, logger="sanitized_db_mcp"):
             client.get("/test", headers={"Authorization": "Bearer wrong-key"})
 
-        auth_records = [r for r in caplog.records if "Authentication failed" in r.message]
-        assert len(auth_records) >= 1
-        assert auth_records[0].levelno == logging.DEBUG
+        debug_records = [
+            r for r in caplog.records
+            if "Authentication failed" in r.message and r.levelno == logging.DEBUG
+        ]
+        assert len(debug_records) >= 1
 
     def test_bearer_prefix_with_empty_token_returns_401(self):
         """'Bearer ' with no token after it should be rejected."""

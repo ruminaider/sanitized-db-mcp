@@ -198,7 +198,7 @@ def _run_sse(server: Server) -> None:
                 "MCP_API_KEY has leading/trailing whitespace. "
                 "Remove the whitespace or set the key without it."
             )
-    api_key = api_key_raw if api_key_raw else None
+    api_key = api_key_raw  # None if unset, validated non-empty above
     app = create_sse_app(server, api_key=api_key)
 
     logger.info("Starting SSE server on 0.0.0.0:%d", port)
