@@ -29,7 +29,7 @@ Issues = "https://github.com/ruminaider/sanitized-db-mcp/issues"
 
 [project.optional-dependencies]
 sse = [
-    "starlette>=0.36",
+    "starlette>=0.36,<1.0",
     "uvicorn>=0.27",
     "sse-starlette>=1.6",
 ]
