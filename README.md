@@ -205,6 +205,8 @@ pip install 'sanitized-db-mcp[sse]'
 | `MCP_TRANSPORT` | No | `stdio` | Transport mode: `stdio` or `sse` |
 | `PORT` | No | `8000` | HTTP port (Render sets this automatically) |
 | `MCP_API_KEY` | Recommended | — | Bearer token for HTTP authentication |
+| `MCP_MAX_CONNECTIONS` | No | unlimited | Max concurrent connections (uvicorn `limit_concurrency`) |
+| `MCP_SESSION_TIMEOUT` | No | unlimited | Max SSE session duration in seconds |
 
 ### Running
 
@@ -246,6 +248,16 @@ In your MCP client config, point to the SSE endpoint:
 - `GET /sse` — SSE connection (MCP session)
 - `POST /messages/` — Client-to-server messages
 - `GET /health` — Health check (no auth required)
+
+### Deployment Guidance
+
+**Connection limits:** Set `MCP_MAX_CONNECTIONS` to prevent resource exhaustion under attack or misconfiguration. A reasonable value is 2-5x your expected concurrent clients (e.g., 100 when expecting 10-20 clients). New connections beyond the limit receive HTTP 503. Note: each SSE session AND each `/messages/` POST from that session count as separate concurrent connections, so do not set this too low.
+
+**Session timeout:** Set `MCP_SESSION_TIMEOUT` (seconds) to close abandoned SSE sessions. 28800 (8 hours) is a reasonable starting point. Clients reconnect automatically after timeout. Without this, abandoned sessions consume resources indefinitely since uvicorn's `timeout_keep_alive` does not apply to active SSE streams.
+
+**CORS:** CORS headers are intentionally omitted. The server's clients (Claude Code, MCP CLI tools) are non-browser applications that ignore CORS. The native browser `EventSource` API cannot send `Authorization` headers, so browsers cannot authenticate even if they attempt cross-origin connections. If browser-based MCP clients become a supported consumer, add Starlette's `CORSMiddleware`.
+
+**Audit logging:** Every query is logged as structured JSON with client IP, request ID, session ID, and user agent for HIPAA compliance. Behind a reverse proxy (Render, nginx), client IP is extracted from `X-Forwarded-For`. Configure your log aggregator for 6-year retention per HIPAA requirements.
 
 ## How the Sanitizer Works
 
