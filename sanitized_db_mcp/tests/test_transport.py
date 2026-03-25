@@ -320,3 +320,42 @@ class TestTransportDispatch:
         with patch("sanitized_db_mcp.server.asyncio") as mock_asyncio:
             mock_asyncio.run = lambda coro: coro.close()
             main()
+
+    def test_invalid_port_raises_configuration_error(self, monkeypatch, allowlist_env):
+        """PORT='abc' should raise ConfigurationError."""
+        from sanitized_db_mcp.errors import ConfigurationError
+
+        monkeypatch.setenv("MCP_TRANSPORT", "sse")
+        monkeypatch.setenv("MCP_API_KEY", "test-key-long-enough")
+        monkeypatch.setenv("PORT", "abc")
+
+        from sanitized_db_mcp.server import main
+
+        with pytest.raises(ConfigurationError, match="PORT"):
+            main()
+
+    def test_port_out_of_range_raises(self, monkeypatch, allowlist_env):
+        """PORT='99999' should raise ConfigurationError."""
+        from sanitized_db_mcp.errors import ConfigurationError
+
+        monkeypatch.setenv("MCP_TRANSPORT", "sse")
+        monkeypatch.setenv("MCP_API_KEY", "test-key-long-enough")
+        monkeypatch.setenv("PORT", "99999")
+
+        from sanitized_db_mcp.server import main
+
+        with pytest.raises(ConfigurationError, match="PORT"):
+            main()
+
+    def test_port_zero_raises(self, monkeypatch, allowlist_env):
+        """PORT='0' should raise ConfigurationError."""
+        from sanitized_db_mcp.errors import ConfigurationError
+
+        monkeypatch.setenv("MCP_TRANSPORT", "sse")
+        monkeypatch.setenv("MCP_API_KEY", "test-key-long-enough")
+        monkeypatch.setenv("PORT", "0")
+
+        from sanitized_db_mcp.server import main
+
+        with pytest.raises(ConfigurationError, match="PORT"):
+            main()

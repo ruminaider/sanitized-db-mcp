@@ -159,10 +159,9 @@ def create_server() -> tuple[Server, Allowlist]:
 
 async def _run_stdio(server: Server) -> None:
     """Run the server with stdio transport."""
+    init_options = server.create_initialization_options()
     async with stdio_server() as (read_stream, write_stream):
-        await server.run(
-            read_stream, write_stream, server.create_initialization_options()
-        )
+        await server.run(read_stream, write_stream, init_options)
 
 
 def _run_sse(server: Server) -> None:
@@ -171,7 +170,17 @@ def _run_sse(server: Server) -> None:
 
     import uvicorn
 
-    port = int(os.environ.get("PORT", "8000"))
+    port_raw = os.environ.get("PORT", "8000")
+    try:
+        port = int(port_raw)
+    except ValueError:
+        raise ConfigurationError(
+            f"PORT must be an integer, got {port_raw!r}"
+        ) from None
+    if not (1 <= port <= 65535):
+        raise ConfigurationError(
+            f"PORT must be between 1 and 65535, got {port}"
+        )
     api_key = os.environ.get("MCP_API_KEY") or None
     app = create_sse_app(server, api_key=api_key)
 
