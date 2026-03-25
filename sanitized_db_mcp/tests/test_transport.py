@@ -72,6 +72,39 @@ class TestBearerAuthMiddleware:
         assert resp.status_code == 200
         assert resp.json() == {"status": "ok"}
 
+    def test_non_utf8_auth_header_returns_401(self):
+        """Non-UTF-8 bytes in Authorization header should produce 401, not 500."""
+        import asyncio
+        from sanitized_db_mcp.transport import BearerAuthMiddleware
+
+        async def inner_app(scope, receive, send):
+            response = JSONResponse({"ok": True})
+            await response(scope, receive, send)
+
+        middleware = BearerAuthMiddleware(inner_app, "secret-key")
+
+        async def run():
+            status_codes = []
+
+            async def receive():
+                return {"type": "http.request", "body": b""}
+
+            async def send(message):
+                if message["type"] == "http.response.start":
+                    status_codes.append(message["status"])
+
+            scope = {
+                "type": "http",
+                "path": "/test",
+                "headers": [(b"authorization", b"\xff\xfe\xfd")],
+                "method": "GET",
+            }
+            await middleware(scope, receive, send)
+            return status_codes[0]
+
+        status = asyncio.get_event_loop().run_until_complete(run())
+        assert status == 401
+
     def test_no_middleware_allows_all(self):
         client = TestClient(_make_app(api_key=None))
         resp = client.get("/test")  # no auth header, no middleware

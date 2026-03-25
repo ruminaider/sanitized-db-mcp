@@ -46,7 +46,7 @@ class BearerAuthMiddleware:
 
     def __init__(self, app, api_key: str) -> None:
         self.app = app
-        self._expected = f"Bearer {api_key}"
+        self._expected = f"Bearer {api_key}".encode()
 
     async def __call__(self, scope, receive, send) -> None:
         if scope["type"] != "http":
@@ -63,7 +63,7 @@ class BearerAuthMiddleware:
                 auth = val
                 break
 
-        if not hmac.compare_digest(auth.decode(), self._expected):
+        if not hmac.compare_digest(auth, self._expected):
             response = JSONResponse(
                 {"error": "Unauthorized"},
                 status_code=401,
