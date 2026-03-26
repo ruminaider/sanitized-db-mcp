@@ -6,7 +6,7 @@ Future: send to centralized logging (CloudWatch, Datadog) for
 6-year retention.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 import json
 import logging
 import time
@@ -29,7 +29,7 @@ class AuditEntry:
     columns_redacted: list[str] = field(default_factory=list)
     row_count: int | None = None
     execution_time_ms: float | None = None
-    # Client identity fields (HIPAA audit trail)
+    # Required for HIPAA audit trail
     client_ip: str | None = None
     request_id: str | None = None
     session_id: str | None = None
@@ -37,26 +37,7 @@ class AuditEntry:
     transport: str | None = None
 
     def to_json(self) -> str:
-        return json.dumps(
-            {
-                "timestamp": self.timestamp,
-                "original_sql": self.original_sql,
-                "rewritten_sql": self.rewritten_sql,
-                "outcome": self.outcome,
-                "rejection_reason": self.rejection_reason,
-                "tables_accessed": self.tables_accessed,
-                "columns_accessed": self.columns_accessed,
-                "columns_redacted": self.columns_redacted,
-                "row_count": self.row_count,
-                "execution_time_ms": self.execution_time_ms,
-                "client_ip": self.client_ip,
-                "request_id": self.request_id,
-                "session_id": self.session_id,
-                "user_agent": self.user_agent,
-                "transport": self.transport,
-            },
-            default=str,
-        )
+        return json.dumps(asdict(self), default=str)
 
 
 def extract_client_ip(request) -> str | None:

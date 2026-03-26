@@ -154,12 +154,10 @@ def create_sse_app(
                         await server.run(read_stream, write_stream, init_options)
                 else:
                     await server.run(read_stream, write_stream, init_options)
-        except TimeoutError:
-            logger.info("SSE session closed (timeout after %ds)", session_timeout)
         except BaseException as exc:
             if isinstance(exc, (KeyboardInterrupt, SystemExit, GeneratorExit)):
                 raise
-            if _contains_timeout(exc):
+            if isinstance(exc, TimeoutError) or _contains_timeout(exc):
                 logger.info("SSE session closed (timeout after %ds)", session_timeout)
             elif _is_expected_disconnect(exc):
                 logger.debug("SSE session closed (client disconnect)")

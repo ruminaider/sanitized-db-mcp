@@ -42,6 +42,20 @@ from .errors import ConfigurationError, SanitizationError, sanitize_pg_error
 from .sanitizer import sanitize_query
 
 
+def _parse_positive_int_env(name: str, *, default: str | None = None) -> int | None:
+    """Parse an optional env var as a positive integer, or raise ConfigurationError."""
+    raw = os.environ.get(name, default) if default else os.environ.get(name)
+    if raw is None:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        raise ConfigurationError(f"{name} must be an integer, got {raw!r}") from None
+    if value < 1:
+        raise ConfigurationError(f"{name} must be positive, got {value}")
+    return value
+
+
 # ---------------------------------------------------------------------------
 # Logging setup
 # ---------------------------------------------------------------------------
@@ -194,17 +208,9 @@ def _run_sse(server: Server) -> None:
             "Install with: pip install 'sanitized-db-mcp[sse]'"
         ) from None
 
-    port_raw = os.environ.get("PORT", "8000")
-    try:
-        port = int(port_raw)
-    except ValueError:
-        raise ConfigurationError(
-            f"PORT must be an integer, got {port_raw!r}"
-        ) from None
-    if not (1 <= port <= 65535):
-        raise ConfigurationError(
-            f"PORT must be between 1 and 65535, got {port}"
-        )
+    port = _parse_positive_int_env("PORT", default="8000")
+    if port > 65535:
+        raise ConfigurationError(f"PORT must be between 1 and 65535, got {port}")
     api_key_raw = os.environ.get("MCP_API_KEY")
     if api_key_raw is not None:
         if not api_key_raw.strip():
@@ -218,33 +224,8 @@ def _run_sse(server: Server) -> None:
             )
     api_key = api_key_raw  # None if unset, validated non-empty above
 
-    max_conn_raw = os.environ.get("MCP_MAX_CONNECTIONS")
-    max_connections: int | None = None
-    if max_conn_raw is not None:
-        try:
-            max_connections = int(max_conn_raw)
-        except ValueError:
-            raise ConfigurationError(
-                f"MCP_MAX_CONNECTIONS must be an integer, got {max_conn_raw!r}"
-            ) from None
-        if max_connections < 1:
-            raise ConfigurationError(
-                f"MCP_MAX_CONNECTIONS must be positive, got {max_connections}"
-            )
-
-    session_timeout_raw = os.environ.get("MCP_SESSION_TIMEOUT")
-    session_timeout: int | None = None
-    if session_timeout_raw is not None:
-        try:
-            session_timeout = int(session_timeout_raw)
-        except ValueError:
-            raise ConfigurationError(
-                f"MCP_SESSION_TIMEOUT must be an integer, got {session_timeout_raw!r}"
-            ) from None
-        if session_timeout < 1:
-            raise ConfigurationError(
-                f"MCP_SESSION_TIMEOUT must be positive, got {session_timeout}"
-            )
+    max_connections = _parse_positive_int_env("MCP_MAX_CONNECTIONS")
+    session_timeout = _parse_positive_int_env("MCP_SESSION_TIMEOUT")
 
     app = create_sse_app(server, api_key=api_key, session_timeout=session_timeout)
 
