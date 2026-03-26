@@ -155,7 +155,7 @@ def create_sse_app(
                 else:
                     await server.run(read_stream, write_stream, init_options)
         except BaseException as exc:
-            if isinstance(exc, (KeyboardInterrupt, SystemExit, GeneratorExit)):
+            if isinstance(exc, (KeyboardInterrupt, SystemExit, GeneratorExit, asyncio.CancelledError)):
                 raise
             if isinstance(exc, TimeoutError) or _contains_timeout(exc):
                 logger.info("SSE session closed (timeout after %ds)", session_timeout)

@@ -354,6 +354,28 @@ class TestHandleSseErrorHandling:
         assert len(sse_records) >= 1
         assert sse_records[0].levelno == logging.DEBUG
 
+    def test_cancelled_error_not_logged_as_unexpected(self, caplog):
+        """CancelledError during shutdown should not log as unexpected error."""
+        import asyncio
+        import logging
+        from unittest.mock import AsyncMock
+        from sanitized_db_mcp.transport import create_sse_app
+        from mcp.server import Server
+
+        server = Server("test-server")
+        app = create_sse_app(server)
+        server.run = AsyncMock(side_effect=asyncio.CancelledError())
+
+        client = TestClient(app, raise_server_exceptions=False)
+        with caplog.at_level(logging.DEBUG, logger="sanitized_db_mcp"):
+            client.get("/sse")
+
+        unexpected_records = [
+            r for r in caplog.records
+            if "unexpected" in r.message.lower() and r.levelno >= logging.ERROR
+        ]
+        assert len(unexpected_records) == 0
+
     def test_session_timeout_closes_connection(self):
         """Session that exceeds timeout should be closed gracefully (no 500)."""
         import asyncio
