@@ -56,6 +56,9 @@ def _parse_positive_int_env(name: str, *, default: str | None = None) -> int | N
     return value
 
 
+_transport_mode: str = "stdio"
+
+
 # ---------------------------------------------------------------------------
 # Logging setup
 # ---------------------------------------------------------------------------
@@ -127,7 +130,7 @@ def create_server() -> tuple[Server, Allowlist]:
         try:
             ctx = request_ctx.get()
         except LookupError:
-            audit.transport = "stdio"
+            pass
         else:
             audit.request_id = str(ctx.request_id) if ctx.request_id else None
             if ctx.request is not None and hasattr(ctx.request, "headers"):
@@ -136,7 +139,8 @@ def create_server() -> tuple[Server, Allowlist]:
                 audit.session_id = getattr(
                     ctx.request, "query_params", {}
                 ).get("session_id")
-            audit.transport = "sse"
+
+        audit.transport = _transport_mode
 
         start = time.time()
 
@@ -229,6 +233,9 @@ def _run_sse(server: Server) -> None:
     session_timeout = _parse_positive_int_env("MCP_SESSION_TIMEOUT")
 
     app = create_sse_app(server, api_key=api_key, session_timeout=session_timeout)
+
+    global _transport_mode
+    _transport_mode = "sse"
 
     logger.info("Starting SSE server on 0.0.0.0:%d", port)
     uvicorn.run(
