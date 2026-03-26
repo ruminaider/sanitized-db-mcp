@@ -44,7 +44,7 @@ from .sanitizer import sanitize_query
 
 def _parse_positive_int_env(name: str, *, default: str | None = None) -> int | None:
     """Parse an optional env var as a positive integer, or raise ConfigurationError."""
-    raw = os.environ.get(name, default) if default else os.environ.get(name)
+    raw = os.environ.get(name, default) if default is not None else os.environ.get(name)
     if raw is None:
         return None
     try:
