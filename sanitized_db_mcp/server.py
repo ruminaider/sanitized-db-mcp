@@ -126,6 +126,9 @@ def create_server() -> tuple[Server, Allowlist]:
         # Enrich audit with client identity from MCP request context
         try:
             ctx = request_ctx.get()
+        except LookupError:
+            audit.transport = "stdio"
+        else:
             audit.request_id = str(ctx.request_id) if ctx.request_id else None
             if ctx.request is not None and hasattr(ctx.request, "headers"):
                 audit.client_ip = extract_client_ip(ctx.request)
@@ -134,8 +137,6 @@ def create_server() -> tuple[Server, Allowlist]:
                     ctx.request, "query_params", {}
                 ).get("session_id")
             audit.transport = "sse"
-        except LookupError:
-            audit.transport = "stdio"
 
         start = time.time()
 
