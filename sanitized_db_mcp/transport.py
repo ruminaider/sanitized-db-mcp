@@ -159,6 +159,14 @@ def create_sse_app(
                 raise
             if isinstance(exc, TimeoutError) or _contains_timeout(exc):
                 logger.info("SSE session closed (timeout after %ds)", session_timeout)
+                # Log any unexpected sub-exceptions grouped with the timeout
+                if isinstance(exc, BaseExceptionGroup):
+                    unexpected = [
+                        e for e in exc.exceptions
+                        if not isinstance(e, (TimeoutError, *_EXPECTED_DISCONNECT))
+                    ]
+                    if unexpected:
+                        logger.error("Unexpected errors alongside timeout: %r", unexpected)
             elif _is_expected_disconnect(exc):
                 logger.debug("SSE session closed (client disconnect)")
             else:
