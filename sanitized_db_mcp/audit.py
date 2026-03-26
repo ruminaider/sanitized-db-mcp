@@ -43,7 +43,9 @@ class AuditEntry:
 def extract_client_ip(request) -> str | None:
     """Extract client IP, respecting reverse proxy headers."""
     if xff := request.headers.get("x-forwarded-for"):
-        return xff.split(",")[0].strip()
+        # Rightmost entry: proxy appends real client IP last.
+        # Leftmost entries are client-provided and spoofable.
+        return xff.split(",")[-1].strip()
     if xri := request.headers.get("x-real-ip"):
         return xri.strip()
     if request.client:

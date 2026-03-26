@@ -732,10 +732,20 @@ class TestAuditClientIdentity:
         assert data["transport"] is None
 
     def test_extract_client_ip_from_x_forwarded_for(self):
+        """Should take rightmost XFF entry (proxy-appended, not client-provided)."""
         from sanitized_db_mcp.audit import extract_client_ip
         from unittest.mock import MagicMock
         request = MagicMock()
         request.headers = {"x-forwarded-for": "203.0.113.50, 70.41.3.18"}
+        request.client.host = "10.0.0.1"
+        assert extract_client_ip(request) == "70.41.3.18"
+
+    def test_extract_client_ip_single_xff_entry(self):
+        """Single XFF entry should work."""
+        from sanitized_db_mcp.audit import extract_client_ip
+        from unittest.mock import MagicMock
+        request = MagicMock()
+        request.headers = {"x-forwarded-for": "203.0.113.50"}
         request.client.host = "10.0.0.1"
         assert extract_client_ip(request) == "203.0.113.50"
 
