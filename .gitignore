@@ -38,3 +38,6 @@ build/
 
 # Lock files are kept
 # pnpm-lock.yaml
+
+# Plans and design docs (local scaffolding, not committed)
+docs/plans/
