@@ -28,6 +28,11 @@ Repository = "https://github.com/ruminaider/sanitized-db-mcp"
 Issues = "https://github.com/ruminaider/sanitized-db-mcp/issues"
 
 [project.optional-dependencies]
+sse = [
+    "starlette>=0.36,<1.0",
+    "uvicorn>=0.27",
+    "sse-starlette>=1.6",
+]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",

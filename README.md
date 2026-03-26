@@ -190,6 +190,77 @@ The server prefers Render API credentials when both are set. For local developme
 - **Rails / Other**: Use the CLI tool to scaffold, then curate manually. Or build your own generator that outputs the same YAML format.
 - **Custom generators**: The YAML format is the contract. Any tool that produces conformant YAML works.
 
+## SSE Transport (Remote Deployment)
+
+For shared deployments (e.g., Render.com), the server supports SSE transport over HTTP.
+
+### Installation
+
+```bash
+pip install 'sanitized-db-mcp[sse]'
+```
+
+### Configuration
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `MCP_TRANSPORT` | No | `stdio` | Transport mode: `stdio` or `sse` |
+| `PORT` | No | `8000` | HTTP port (Render sets this automatically) |
+| `MCP_API_KEY` | Recommended | — | Bearer token for HTTP authentication |
+| `MCP_MAX_CONNECTIONS` | No | unlimited | Max concurrent connections (uvicorn `limit_concurrency`) |
+| `MCP_SESSION_TIMEOUT` | No | unlimited | Max SSE session duration in seconds |
+
+### Running
+
+```bash
+export MCP_TRANSPORT=sse
+export MCP_API_KEY=your-secret-key
+export ALLOWLIST_PATH=./allowlist.yaml
+export DATABASE_URL=postgresql://...
+python -m sanitized_db_mcp.server
+```
+
+### Docker
+
+```bash
+docker run -e MCP_TRANSPORT=sse -e MCP_API_KEY=secret -e ALLOWLIST_PATH=/app/allowlist.yaml \
+  -e DATABASE_URL=postgresql://... -p 8000:8000 sanitized-db-mcp
+```
+
+### Claude Code Client Configuration
+
+In your MCP client config, point to the SSE endpoint:
+
+```json
+{
+  "mcpServers": {
+    "sanitized-db": {
+      "type": "sse",
+      "url": "https://your-service.onrender.com/sse",
+      "headers": {
+        "Authorization": "Bearer your-secret-key"
+      }
+    }
+  }
+}
+```
+
+### Endpoints
+
+- `GET /sse` — SSE connection (MCP session)
+- `POST /messages/` — Client-to-server messages
+- `GET /health` — Health check (no auth required)
+
+### Deployment Guidance
+
+**Connection limits:** Set `MCP_MAX_CONNECTIONS` to prevent resource exhaustion under attack or misconfiguration. A reasonable value is 2-5x your expected concurrent clients (e.g., 100 when expecting 10-20 clients). New connections beyond the limit receive HTTP 503. Note: each SSE session AND each `/messages/` POST from that session count as separate concurrent connections, so do not set this too low.
+
+**Session timeout:** Set `MCP_SESSION_TIMEOUT` (seconds) to close abandoned SSE sessions. 28800 (8 hours) is a reasonable starting point. Clients reconnect automatically after timeout. Without this, abandoned sessions consume resources indefinitely since uvicorn's `timeout_keep_alive` does not apply to active SSE streams.
+
+**CORS:** CORS headers are intentionally omitted. The server's clients (Claude Code, MCP CLI tools) are non-browser applications that ignore CORS. The native browser `EventSource` API cannot send `Authorization` headers, so browsers cannot authenticate even if they attempt cross-origin connections. If browser-based MCP clients become a supported consumer, add Starlette's `CORSMiddleware`.
+
+**Audit logging:** Every query is logged as structured JSON with client IP, request ID, session ID, and user agent for HIPAA compliance. Behind a reverse proxy (Render, nginx), client IP is extracted from `X-Forwarded-For`. Configure your log aggregator for 6-year retention per HIPAA requirements.
+
 ## How the Sanitizer Works
 
 The server exposes a single MCP tool (`query`) that accepts raw SQL and returns sanitized results. Every query passes through an 11-step pipeline:

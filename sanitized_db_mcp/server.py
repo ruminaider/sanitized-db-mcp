@@ -7,17 +7,23 @@ pglast to replace non-allowlisted column references with type-preserving
 placeholders, then executes the rewritten SQL against the database.
 
 Usage:
-    python tools/sanitized_db_mcp/server.py
+    python -m sanitized_db_mcp.server
 
 Environment variables:
     ALLOWLIST_PATH      Path to allowlist.yaml (required)
     RENDER_POSTGRES_ID  Render Postgres instance ID (optional)
     RENDER_API_KEY      Render API key (optional)
     DATABASE_URL        Static connection string fallback (optional)
+    MCP_TRANSPORT       Transport mode: stdio (default) or sse
+    PORT                HTTP port for SSE server (default 8000)
+    MCP_API_KEY         Bearer token for SSE authentication (recommended)
+    MCP_MAX_CONNECTIONS Max concurrent connections for SSE (default: unlimited)
+    MCP_SESSION_TIMEOUT Max SSE session duration in seconds (default: unlimited)
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -25,14 +31,32 @@ import sys
 import time
 
 from mcp.server import Server
+from mcp.server.lowlevel.server import request_ctx
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
 from .allowlist import Allowlist
-from .audit import AuditEntry, log_query
+from .audit import AuditEntry, extract_client_ip, log_query
 from .connection import execute_query
 from .errors import ConfigurationError, SanitizationError, sanitize_pg_error
 from .sanitizer import sanitize_query
+
+
+def _parse_positive_int_env(name: str, *, default: str | None = None) -> int | None:
+    """Parse an optional env var as a positive integer, or raise ConfigurationError."""
+    raw = os.environ.get(name, default) if default is not None else os.environ.get(name)
+    if raw is None:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        raise ConfigurationError(f"{name} must be an integer, got {raw!r}") from None
+    if value < 1:
+        raise ConfigurationError(f"{name} must be positive, got {value}")
+    return value
+
+
+_transport_mode: str = "stdio"
 
 
 # ---------------------------------------------------------------------------
@@ -101,6 +125,23 @@ def create_server() -> tuple[Server, Allowlist]:
             return [TextContent(type="text", text="Error: empty SQL query")]
 
         audit = AuditEntry(original_sql=sql)
+
+        # Enrich audit with client identity from MCP request context
+        try:
+            ctx = request_ctx.get()
+        except LookupError:
+            pass
+        else:
+            audit.request_id = str(ctx.request_id) if ctx.request_id else None
+            if ctx.request is not None and hasattr(ctx.request, "headers"):
+                audit.client_ip = extract_client_ip(ctx.request)
+                audit.user_agent = ctx.request.headers.get("user-agent")
+                audit.session_id = getattr(
+                    ctx.request, "query_params", {}
+                ).get("session_id")
+
+        audit.transport = _transport_mode
+
         start = time.time()
 
         try:
@@ -153,14 +194,78 @@ def create_server() -> tuple[Server, Allowlist]:
     return server, allowlist
 
 
-async def main():
-    """Run the MCP server."""
-    server, _allowlist = create_server()
+async def _run_stdio(server: Server) -> None:
+    """Run the server with stdio transport."""
+    init_options = server.create_initialization_options()
     async with stdio_server() as (read_stream, write_stream):
-        await server.run(read_stream, write_stream, server.create_initialization_options())
+        await server.run(read_stream, write_stream, init_options)
+
+
+def _run_sse(server: Server) -> None:
+    """Run the server with SSE transport over HTTP."""
+    from .transport import create_sse_app
+
+    try:
+        import uvicorn
+    except ImportError:
+        raise ImportError(
+            "SSE transport requires uvicorn. "
+            "Install with: pip install 'sanitized-db-mcp[sse]'"
+        ) from None
+
+    port = _parse_positive_int_env("PORT", default="8000")
+    if port > 65535:
+        raise ConfigurationError(f"PORT must be between 1 and 65535, got {port}")
+    api_key_raw = os.environ.get("MCP_API_KEY")
+    if api_key_raw is not None:
+        if not api_key_raw.strip():
+            raise ConfigurationError(
+                "MCP_API_KEY is set but empty. Provide a real key or unset it entirely."
+            )
+        if api_key_raw != api_key_raw.strip():
+            raise ConfigurationError(
+                "MCP_API_KEY has leading/trailing whitespace. "
+                "Remove the whitespace or set the key without it."
+            )
+    api_key = api_key_raw  # None if unset, validated non-empty above
+
+    max_connections = _parse_positive_int_env("MCP_MAX_CONNECTIONS")
+    session_timeout = _parse_positive_int_env("MCP_SESSION_TIMEOUT")
+
+    app = create_sse_app(server, api_key=api_key, session_timeout=session_timeout)
+
+    global _transport_mode
+    _transport_mode = "sse"
+
+    logger.info("Starting SSE server on 0.0.0.0:%d", port)
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=port,
+        log_level="info",
+        timeout_graceful_shutdown=20,
+        limit_concurrency=max_connections,
+    )
+
+
+def main() -> None:
+    """Run the MCP server.
+
+    Dispatches to stdio or SSE transport based on MCP_TRANSPORT env var.
+    """
+    transport = os.environ.get("MCP_TRANSPORT", "stdio").lower().strip()
+
+    server, _allowlist = create_server()
+
+    if transport == "stdio":
+        asyncio.run(_run_stdio(server))
+    elif transport == "sse":
+        _run_sse(server)
+    else:
+        raise ConfigurationError(
+            f"Unknown MCP_TRANSPORT: {transport!r}. Valid options: stdio, sse"
+        )
 
 
 if __name__ == "__main__":
-    import asyncio
-
-    asyncio.run(main())
+    main()

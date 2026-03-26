@@ -1,0 +1,766 @@
+"""Tests for SSE transport: auth middleware, health endpoint, app construction."""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+from starlette.applications import Starlette
+from starlette.requests import Request
+from starlette.responses import JSONResponse
+from starlette.routing import Route
+from starlette.testclient import TestClient
+
+
+# ---------------------------------------------------------------------------
+# Helpers — minimal Starlette app for testing middleware in isolation
+# ---------------------------------------------------------------------------
+
+async def _echo(request: Request) -> JSONResponse:
+    """Dummy endpoint that returns 200."""
+    return JSONResponse({"ok": True})
+
+
+async def _health(request: Request) -> JSONResponse:
+    return JSONResponse({"status": "ok"})
+
+
+def _make_app(api_key: str | None = None) -> Starlette | object:
+    """Build a minimal Starlette app, optionally wrapped with auth middleware."""
+    from sanitized_db_mcp.transport import BearerAuthMiddleware
+
+    app = Starlette(routes=[
+        Route("/test", endpoint=_echo, methods=["GET"]),
+        Route("/health", endpoint=_health, methods=["GET"]),
+    ])
+    if api_key:
+        app = BearerAuthMiddleware(app, api_key)
+    return app
+
+
+# ---------------------------------------------------------------------------
+# BearerAuthMiddleware
+# ---------------------------------------------------------------------------
+
+class TestBearerAuthMiddleware:
+    """Tests for the pure-ASGI bearer token middleware."""
+
+    def test_valid_token_passes(self):
+        client = TestClient(_make_app(api_key="secret-key"))
+        resp = client.get("/test", headers={"Authorization": "Bearer secret-key"})
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True}
+
+    def test_missing_token_returns_401(self):
+        client = TestClient(_make_app(api_key="secret-key"))
+        resp = client.get("/test")
+        assert resp.status_code == 401
+        assert resp.json() == {"error": "Unauthorized"}
+        assert resp.headers["www-authenticate"] == "Bearer"
+
+    def test_wrong_token_returns_401(self):
+        client = TestClient(_make_app(api_key="secret-key"))
+        resp = client.get("/test", headers={"Authorization": "Bearer wrong-key"})
+        assert resp.status_code == 401
+
+    def test_malformed_auth_header_returns_401(self):
+        client = TestClient(_make_app(api_key="secret-key"))
+        resp = client.get("/test", headers={"Authorization": "Basic dXNlcjpwYXNz"})
+        assert resp.status_code == 401
+
+    def test_health_bypasses_auth(self):
+        client = TestClient(_make_app(api_key="secret-key"))
+        resp = client.get("/health")  # no auth header
+        assert resp.status_code == 200
+        assert resp.json() == {"status": "ok"}
+
+    def test_non_utf8_auth_header_returns_401(self):
+        """Non-UTF-8 bytes in Authorization header should produce 401, not 500."""
+        import asyncio
+        from sanitized_db_mcp.transport import BearerAuthMiddleware
+
+        async def inner_app(scope, receive, send):
+            response = JSONResponse({"ok": True})
+            await response(scope, receive, send)
+
+        middleware = BearerAuthMiddleware(inner_app, "secret-key")
+
+        async def run():
+            status_codes = []
+
+            async def receive():
+                return {"type": "http.request", "body": b""}
+
+            async def send(message):
+                if message["type"] == "http.response.start":
+                    status_codes.append(message["status"])
+
+            scope = {
+                "type": "http",
+                "path": "/test",
+                "headers": [(b"authorization", b"\xff\xfe\xfd")],
+                "method": "GET",
+            }
+            await middleware(scope, receive, send)
+            return status_codes[0]
+
+        status = asyncio.run(run())
+        assert status == 401
+
+    def test_no_middleware_allows_all(self):
+        client = TestClient(_make_app(api_key=None))
+        resp = client.get("/test")  # no auth header, no middleware
+        assert resp.status_code == 200
+
+    def test_failed_auth_is_logged(self, caplog):
+        """Failed auth attempt should be logged at DEBUG level."""
+        import logging
+
+        client = TestClient(_make_app(api_key="secret-key"))
+
+        with caplog.at_level(logging.DEBUG, logger="sanitized_db_mcp"):
+            client.get("/test", headers={"Authorization": "Bearer wrong-key"})
+
+        debug_records = [
+            r for r in caplog.records
+            if "Authentication failed" in r.message and r.levelno == logging.DEBUG
+        ]
+        assert len(debug_records) >= 1
+
+    def test_bearer_prefix_with_empty_token_returns_401(self):
+        """'Bearer ' with no token after it should be rejected."""
+        client = TestClient(_make_app(api_key="secret-key"))
+        resp = client.get("/test", headers={"Authorization": "Bearer "})
+        assert resp.status_code == 401
+
+    def test_lifespan_scope_bypasses_auth(self):
+        """Non-HTTP scopes (lifespan) must pass through without auth check."""
+        import asyncio
+        from sanitized_db_mcp.transport import BearerAuthMiddleware
+
+        passed_through = []
+
+        async def inner_app(scope, receive, send):
+            passed_through.append(scope["type"])
+
+        middleware = BearerAuthMiddleware(inner_app, "secret-key")
+
+        async def run():
+            scope = {"type": "lifespan"}
+
+            async def receive():
+                return {"type": "lifespan.startup"}
+
+            async def send(message):
+                pass
+
+            await middleware(scope, receive, send)
+
+        asyncio.run(run())
+        assert passed_through == ["lifespan"]
+
+    def test_health_trailing_slash_bypasses_auth(self):
+        """'/health/' should also bypass auth for load balancer robustness."""
+        import asyncio
+        from sanitized_db_mcp.transport import BearerAuthMiddleware
+        from starlette.responses import JSONResponse
+
+        async def inner_app(scope, receive, send):
+            response = JSONResponse({"status": "ok"})
+            await response(scope, receive, send)
+
+        middleware = BearerAuthMiddleware(inner_app, "secret-key")
+
+        async def run():
+            status_codes = []
+
+            async def receive():
+                return {"type": "http.request", "body": b""}
+
+            async def send(message):
+                if message["type"] == "http.response.start":
+                    status_codes.append(message["status"])
+
+            scope = {
+                "type": "http",
+                "path": "/health/",
+                "headers": [],
+                "method": "GET",
+            }
+            await middleware(scope, receive, send)
+            return status_codes[0]
+
+        status = asyncio.run(run())
+        assert status == 200
+
+
+# ---------------------------------------------------------------------------
+# Health endpoint
+# ---------------------------------------------------------------------------
+
+class TestHealthEndpoint:
+    """Tests for the /health endpoint."""
+
+    def test_health_returns_ok(self):
+        from sanitized_db_mcp.transport import health_check
+
+        app = Starlette(routes=[Route("/health", endpoint=health_check, methods=["GET"])])
+        client = TestClient(app)
+        resp = client.get("/health")
+        assert resp.status_code == 200
+        assert resp.json() == {"status": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# SSE app construction
+# ---------------------------------------------------------------------------
+
+class TestCreateSseApp:
+    """Tests for create_sse_app() factory."""
+
+    def _make_mock_server(self):
+        """Create a minimal MCP Server for testing app construction."""
+        from mcp.server import Server
+        return Server("test-server")
+
+    def test_returns_starlette_without_key(self):
+        from sanitized_db_mcp.transport import create_sse_app
+        app = create_sse_app(self._make_mock_server())
+        assert isinstance(app, Starlette)
+
+    def test_returns_middleware_with_key(self):
+        from sanitized_db_mcp.transport import create_sse_app, BearerAuthMiddleware
+        app = create_sse_app(self._make_mock_server(), api_key="test-key")
+        assert isinstance(app, BearerAuthMiddleware)
+
+    def test_health_accessible_without_auth(self):
+        from sanitized_db_mcp.transport import create_sse_app
+
+        app = create_sse_app(self._make_mock_server(), api_key="test-key")
+        client = TestClient(app)
+        resp = client.get("/health")
+        assert resp.status_code == 200
+        assert resp.json() == {"status": "ok"}
+
+    def test_sse_endpoint_requires_auth_when_key_set(self):
+        from sanitized_db_mcp.transport import create_sse_app
+
+        app = create_sse_app(self._make_mock_server(), api_key="test-key")
+        client = TestClient(app)
+        resp = client.get("/sse")
+        assert resp.status_code == 401
+
+    def test_messages_endpoint_requires_auth_when_key_set(self):
+        from sanitized_db_mcp.transport import create_sse_app
+
+        app = create_sse_app(self._make_mock_server(), api_key="test-key")
+        client = TestClient(app)
+        resp = client.post("/messages/")
+        assert resp.status_code == 401
+
+    def test_no_auth_when_key_unset(self):
+        """Without api_key, auth-gated endpoints should be accessible (no 401)."""
+        from sanitized_db_mcp.transport import create_sse_app
+
+        app = create_sse_app(self._make_mock_server())
+        client = TestClient(app, raise_server_exceptions=False)
+        # Use /messages/ POST (returns immediately) instead of /sse GET
+        # (which opens a long-lived SSE stream that hangs the test).
+        resp = client.post("/messages/")
+        assert resp.status_code != 401
+
+
+# ---------------------------------------------------------------------------
+# SSE error handling
+# ---------------------------------------------------------------------------
+
+class TestHandleSseErrorHandling:
+    """Tests that SSE connection errors are handled gracefully."""
+
+    def _make_mock_server(self):
+        from mcp.server import Server
+        return Server("test-server")
+
+    def _make_app_with_failing_server(self, exc_to_raise):
+        """Build an SSE app whose server.run() raises *exc_to_raise*."""
+        from unittest.mock import AsyncMock, patch
+        from sanitized_db_mcp.transport import create_sse_app
+
+        server = self._make_mock_server()
+        app = create_sse_app(server)
+
+        # Patch server.run on the instance so the handler's try/except is exercised.
+        server.run = AsyncMock(side_effect=exc_to_raise)
+        return app
+
+    def test_expected_disconnect_does_not_500(self):
+        """ClosedResourceError (client disconnect) should not produce a 500."""
+        from anyio import ClosedResourceError
+
+        app = self._make_app_with_failing_server(ClosedResourceError())
+        client = TestClient(app, raise_server_exceptions=False)
+
+        resp = client.get("/sse")
+        assert resp.status_code < 500
+
+    def test_expected_disconnect_logs_debug(self, caplog):
+        """ClosedResourceError should log at DEBUG level."""
+        import logging
+        from anyio import ClosedResourceError
+
+        app = self._make_app_with_failing_server(ClosedResourceError())
+        client = TestClient(app, raise_server_exceptions=False)
+
+        with caplog.at_level(logging.DEBUG, logger="sanitized_db_mcp"):
+            client.get("/sse")
+
+        sse_records = [r for r in caplog.records if "SSE session" in r.message]
+        assert len(sse_records) >= 1
+        assert sse_records[0].levelno == logging.DEBUG
+
+    def test_unexpected_error_does_not_500(self):
+        """Unexpected errors should be caught, not produce unhandled 500s."""
+        app = self._make_app_with_failing_server(RuntimeError("boom"))
+        client = TestClient(app, raise_server_exceptions=False)
+
+        resp = client.get("/sse")
+        assert resp.status_code < 500
+
+    def test_unexpected_error_logs_error(self, caplog):
+        """Unexpected errors should log at ERROR level with traceback."""
+        import logging
+
+        app = self._make_app_with_failing_server(RuntimeError("boom"))
+        client = TestClient(app, raise_server_exceptions=False)
+
+        with caplog.at_level(logging.DEBUG, logger="sanitized_db_mcp"):
+            client.get("/sse")
+
+        sse_records = [r for r in caplog.records if "SSE session" in r.message]
+        assert len(sse_records) >= 1
+        assert sse_records[0].levelno == logging.ERROR
+
+    def test_connection_error_logs_debug(self, caplog):
+        """ConnectionError (network flap) should log at DEBUG, not ERROR."""
+        import logging
+
+        app = self._make_app_with_failing_server(ConnectionError("reset"))
+        client = TestClient(app, raise_server_exceptions=False)
+
+        with caplog.at_level(logging.DEBUG, logger="sanitized_db_mcp"):
+            client.get("/sse")
+
+        sse_records = [r for r in caplog.records if "SSE session" in r.message]
+        assert len(sse_records) >= 1
+        assert sse_records[0].levelno == logging.DEBUG
+
+    def test_cancelled_error_not_logged_as_unexpected(self, caplog):
+        """CancelledError during shutdown should not log as unexpected error."""
+        import asyncio
+        import logging
+        from unittest.mock import AsyncMock
+        from sanitized_db_mcp.transport import create_sse_app
+        from mcp.server import Server
+
+        server = Server("test-server")
+        app = create_sse_app(server)
+        server.run = AsyncMock(side_effect=asyncio.CancelledError())
+
+        client = TestClient(app, raise_server_exceptions=False)
+        with caplog.at_level(logging.DEBUG, logger="sanitized_db_mcp"):
+            client.get("/sse")
+
+        unexpected_records = [
+            r for r in caplog.records
+            if "unexpected" in r.message.lower() and r.levelno >= logging.ERROR
+        ]
+        assert len(unexpected_records) == 0
+
+    def test_session_timeout_closes_connection(self):
+        """Session that exceeds timeout should be closed gracefully (no 500)."""
+        import asyncio
+        from unittest.mock import AsyncMock, patch
+        from sanitized_db_mcp.transport import create_sse_app
+        from mcp.server import Server
+
+        server = Server("test-server")
+        app = create_sse_app(server, session_timeout=0.01)
+
+        # Make server.run block forever so the timeout fires
+        async def block_forever(*args, **kwargs):
+            await asyncio.sleep(3600)
+
+        server.run = AsyncMock(side_effect=block_forever)
+
+        client = TestClient(app, raise_server_exceptions=False)
+        resp = client.get("/sse")
+        assert resp.status_code < 500
+
+    def test_session_timeout_is_logged(self, caplog):
+        """Session timeout should be logged at INFO level."""
+        import asyncio
+        import logging
+        from unittest.mock import AsyncMock
+        from sanitized_db_mcp.transport import create_sse_app
+        from mcp.server import Server
+
+        server = Server("test-server")
+        app = create_sse_app(server, session_timeout=0.01)
+
+        async def block_forever(*args, **kwargs):
+            await asyncio.sleep(3600)
+
+        server.run = AsyncMock(side_effect=block_forever)
+
+        client = TestClient(app, raise_server_exceptions=False)
+        with caplog.at_level(logging.DEBUG, logger="sanitized_db_mcp"):
+            client.get("/sse")
+
+        timeout_records = [r for r in caplog.records if "timeout" in r.message.lower()]
+        assert len(timeout_records) >= 1
+        assert timeout_records[0].levelno == logging.INFO
+
+
+# ---------------------------------------------------------------------------
+# Transport dispatch (server.py main)
+# ---------------------------------------------------------------------------
+
+_MINIMAL_ALLOWLIST_YAML = (
+    "tables:\n  test_table:\n    id:\n      type: integer\n      placeholder: '0'\n"
+    "allowed_functions:\n  - COUNT\n"
+)
+
+
+@pytest.fixture()
+def allowlist_env(monkeypatch, tmp_path):
+    """Write a minimal allowlist and set ALLOWLIST_PATH."""
+    f = tmp_path / "allowlist.yaml"
+    f.write_text(_MINIMAL_ALLOWLIST_YAML)
+    monkeypatch.setenv("ALLOWLIST_PATH", str(f))
+
+
+class TestTransportDispatch:
+    """Tests for MCP_TRANSPORT parsing and dispatch in server.main()."""
+
+    def test_unknown_transport_raises(self, monkeypatch, allowlist_env):
+        """Unknown MCP_TRANSPORT value raises ConfigurationError."""
+        from sanitized_db_mcp.errors import ConfigurationError
+
+        monkeypatch.setenv("MCP_TRANSPORT", "bogus")
+
+        from sanitized_db_mcp.server import main
+
+        with pytest.raises(ConfigurationError, match="Unknown MCP_TRANSPORT"):
+            main()
+
+    def test_transport_case_insensitive(self, monkeypatch, allowlist_env):
+        """MCP_TRANSPORT=SSE (uppercase) should dispatch to _run_sse."""
+        monkeypatch.setenv("MCP_TRANSPORT", "SSE")
+
+        from sanitized_db_mcp.server import main
+        from unittest.mock import patch, MagicMock
+
+        mock_run_sse = MagicMock()
+        with patch("sanitized_db_mcp.server._run_sse", mock_run_sse):
+            main()
+        mock_run_sse.assert_called_once()
+
+    def test_transport_whitespace_stripped(self, monkeypatch, allowlist_env):
+        """MCP_TRANSPORT=' sse\\n' should be accepted after strip()."""
+        monkeypatch.setenv("MCP_TRANSPORT", " sse\n")
+
+        from sanitized_db_mcp.server import main
+        from unittest.mock import patch, MagicMock
+
+        mock_run_sse = MagicMock()
+        with patch("sanitized_db_mcp.server._run_sse", mock_run_sse):
+            main()
+        mock_run_sse.assert_called_once()
+
+    def test_default_transport_is_stdio(self, monkeypatch, allowlist_env):
+        """Unset MCP_TRANSPORT defaults to stdio."""
+        monkeypatch.delenv("MCP_TRANSPORT", raising=False)
+
+        from sanitized_db_mcp.server import main
+        from unittest.mock import patch
+
+        with patch("sanitized_db_mcp.server.asyncio") as mock_asyncio:
+            mock_asyncio.run = lambda coro: coro.close()
+            main()
+
+    def test_invalid_port_raises_configuration_error(self, monkeypatch, allowlist_env):
+        """PORT='abc' should raise ConfigurationError."""
+        from sanitized_db_mcp.errors import ConfigurationError
+
+        monkeypatch.setenv("MCP_TRANSPORT", "sse")
+        monkeypatch.setenv("MCP_API_KEY", "test-key-long-enough")
+        monkeypatch.setenv("PORT", "abc")
+
+        from sanitized_db_mcp.server import main
+
+        with pytest.raises(ConfigurationError, match="PORT"):
+            main()
+
+    def test_port_out_of_range_raises(self, monkeypatch, allowlist_env):
+        """PORT='99999' should raise ConfigurationError."""
+        from sanitized_db_mcp.errors import ConfigurationError
+
+        monkeypatch.setenv("MCP_TRANSPORT", "sse")
+        monkeypatch.setenv("MCP_API_KEY", "test-key-long-enough")
+        monkeypatch.setenv("PORT", "99999")
+
+        from sanitized_db_mcp.server import main
+
+        with pytest.raises(ConfigurationError, match="PORT"):
+            main()
+
+    def test_port_zero_raises(self, monkeypatch, allowlist_env):
+        """PORT='0' should raise ConfigurationError."""
+        from sanitized_db_mcp.errors import ConfigurationError
+
+        monkeypatch.setenv("MCP_TRANSPORT", "sse")
+        monkeypatch.setenv("MCP_API_KEY", "test-key-long-enough")
+        monkeypatch.setenv("PORT", "0")
+
+        from sanitized_db_mcp.server import main
+
+        with pytest.raises(ConfigurationError, match="PORT"):
+            main()
+
+    def test_empty_api_key_raises(self, monkeypatch, allowlist_env):
+        """MCP_API_KEY='' should raise ConfigurationError."""
+        from sanitized_db_mcp.errors import ConfigurationError
+
+        monkeypatch.setenv("MCP_TRANSPORT", "sse")
+        monkeypatch.setenv("MCP_API_KEY", "")
+
+        from sanitized_db_mcp.server import main
+
+        with pytest.raises(ConfigurationError, match="MCP_API_KEY"):
+            main()
+
+    def test_whitespace_only_api_key_raises(self, monkeypatch, allowlist_env):
+        """MCP_API_KEY='   ' should raise ConfigurationError."""
+        from sanitized_db_mcp.errors import ConfigurationError
+
+        monkeypatch.setenv("MCP_TRANSPORT", "sse")
+        monkeypatch.setenv("MCP_API_KEY", "   ")
+
+        from sanitized_db_mcp.server import main
+
+        with pytest.raises(ConfigurationError, match="MCP_API_KEY"):
+            main()
+
+    def test_api_key_with_leading_trailing_whitespace_raises(self, monkeypatch, allowlist_env):
+        """MCP_API_KEY='my-secret-key ' should raise ConfigurationError."""
+        from sanitized_db_mcp.errors import ConfigurationError
+
+        monkeypatch.setenv("MCP_TRANSPORT", "sse")
+        monkeypatch.setenv("MCP_API_KEY", "my-secret-key ")
+
+        from sanitized_db_mcp.server import main
+
+        with pytest.raises(ConfigurationError, match="whitespace"):
+            main()
+
+    def test_missing_uvicorn_raises_helpful_error(self, monkeypatch, allowlist_env):
+        """Missing uvicorn should raise ImportError with install hint."""
+        monkeypatch.setenv("MCP_TRANSPORT", "sse")
+        monkeypatch.setenv("MCP_API_KEY", "test-key-long-enough")
+
+        from sanitized_db_mcp.server import main
+        from unittest.mock import patch
+
+        with patch.dict("sys.modules", {"uvicorn": None}):
+            with pytest.raises(ImportError, match="pip install"):
+                main()
+
+    def test_max_connections_passed_to_uvicorn(self, monkeypatch, allowlist_env):
+        """MCP_MAX_CONNECTIONS=50 should be forwarded as limit_concurrency."""
+        monkeypatch.setenv("MCP_TRANSPORT", "sse")
+        monkeypatch.setenv("MCP_API_KEY", "test-key-long-enough")
+        monkeypatch.setenv("MCP_MAX_CONNECTIONS", "50")
+
+        from sanitized_db_mcp.server import main
+        from unittest.mock import patch, MagicMock
+
+        mock_uvicorn_run = MagicMock()
+        with patch("uvicorn.run", mock_uvicorn_run):
+            main()
+
+        call_kwargs = mock_uvicorn_run.call_args[1]
+        assert call_kwargs["limit_concurrency"] == 50
+
+    def test_max_connections_defaults_to_none(self, monkeypatch, allowlist_env):
+        """Unset MCP_MAX_CONNECTIONS should leave limit_concurrency as None."""
+        monkeypatch.setenv("MCP_TRANSPORT", "sse")
+        monkeypatch.setenv("MCP_API_KEY", "test-key-long-enough")
+        monkeypatch.delenv("MCP_MAX_CONNECTIONS", raising=False)
+
+        from sanitized_db_mcp.server import main
+        from unittest.mock import patch, MagicMock
+
+        mock_uvicorn_run = MagicMock()
+        with patch("uvicorn.run", mock_uvicorn_run):
+            main()
+
+        call_kwargs = mock_uvicorn_run.call_args[1]
+        assert "limit_concurrency" in call_kwargs
+        assert call_kwargs["limit_concurrency"] is None
+
+    def test_invalid_max_connections_raises(self, monkeypatch, allowlist_env):
+        """MCP_MAX_CONNECTIONS='abc' should raise ConfigurationError."""
+        from sanitized_db_mcp.errors import ConfigurationError
+
+        monkeypatch.setenv("MCP_TRANSPORT", "sse")
+        monkeypatch.setenv("MCP_API_KEY", "test-key-long-enough")
+        monkeypatch.setenv("MCP_MAX_CONNECTIONS", "abc")
+
+        from sanitized_db_mcp.server import main
+
+        with pytest.raises(ConfigurationError, match="MCP_MAX_CONNECTIONS"):
+            main()
+
+    def test_zero_max_connections_raises(self, monkeypatch, allowlist_env):
+        """MCP_MAX_CONNECTIONS='0' should raise ConfigurationError (must be positive)."""
+        from sanitized_db_mcp.errors import ConfigurationError
+
+        monkeypatch.setenv("MCP_TRANSPORT", "sse")
+        monkeypatch.setenv("MCP_API_KEY", "test-key-long-enough")
+        monkeypatch.setenv("MCP_MAX_CONNECTIONS", "0")
+
+        from sanitized_db_mcp.server import main
+
+        with pytest.raises(ConfigurationError, match="MCP_MAX_CONNECTIONS"):
+            main()
+
+    def test_session_timeout_passed_to_app(self, monkeypatch, allowlist_env):
+        """MCP_SESSION_TIMEOUT=3600 should be forwarded to create_sse_app."""
+        monkeypatch.setenv("MCP_TRANSPORT", "sse")
+        monkeypatch.setenv("MCP_API_KEY", "test-key-long-enough")
+        monkeypatch.setenv("MCP_SESSION_TIMEOUT", "3600")
+
+        from sanitized_db_mcp.server import main
+        from unittest.mock import patch, MagicMock
+
+        mock_create_sse_app = MagicMock()
+        mock_uvicorn_run = MagicMock()
+        with patch("sanitized_db_mcp.transport.create_sse_app", mock_create_sse_app), \
+             patch("uvicorn.run", mock_uvicorn_run):
+            main()
+
+        call_kwargs = mock_create_sse_app.call_args[1]
+        assert call_kwargs["session_timeout"] == 3600
+
+    def test_session_timeout_defaults_to_none(self, monkeypatch, allowlist_env):
+        """Unset MCP_SESSION_TIMEOUT should pass session_timeout=None."""
+        monkeypatch.setenv("MCP_TRANSPORT", "sse")
+        monkeypatch.setenv("MCP_API_KEY", "test-key-long-enough")
+        monkeypatch.delenv("MCP_SESSION_TIMEOUT", raising=False)
+
+        from sanitized_db_mcp.server import main
+        from unittest.mock import patch, MagicMock
+
+        mock_create_sse_app = MagicMock()
+        mock_uvicorn_run = MagicMock()
+        with patch("sanitized_db_mcp.transport.create_sse_app", mock_create_sse_app), \
+             patch("uvicorn.run", mock_uvicorn_run):
+            main()
+
+        call_kwargs = mock_create_sse_app.call_args[1]
+        assert call_kwargs["session_timeout"] is None
+
+    def test_invalid_session_timeout_raises(self, monkeypatch, allowlist_env):
+        """MCP_SESSION_TIMEOUT='abc' should raise ConfigurationError."""
+        from sanitized_db_mcp.errors import ConfigurationError
+
+        monkeypatch.setenv("MCP_TRANSPORT", "sse")
+        monkeypatch.setenv("MCP_API_KEY", "test-key-long-enough")
+        monkeypatch.setenv("MCP_SESSION_TIMEOUT", "abc")
+
+        from sanitized_db_mcp.server import main
+
+        with pytest.raises(ConfigurationError, match="MCP_SESSION_TIMEOUT"):
+            main()
+
+    def test_zero_session_timeout_raises(self, monkeypatch, allowlist_env):
+        """MCP_SESSION_TIMEOUT='0' should raise ConfigurationError (must be positive)."""
+        from sanitized_db_mcp.errors import ConfigurationError
+
+        monkeypatch.setenv("MCP_TRANSPORT", "sse")
+        monkeypatch.setenv("MCP_API_KEY", "test-key-long-enough")
+        monkeypatch.setenv("MCP_SESSION_TIMEOUT", "0")
+
+        from sanitized_db_mcp.server import main
+
+        with pytest.raises(ConfigurationError, match="MCP_SESSION_TIMEOUT"):
+            main()
+
+
+# ---------------------------------------------------------------------------
+# Audit client identity
+# ---------------------------------------------------------------------------
+
+class TestAuditClientIdentity:
+    """Tests for client identity in audit log entries."""
+
+    def test_audit_entry_includes_all_identity_fields_in_json(self):
+        from sanitized_db_mcp.audit import AuditEntry
+        entry = AuditEntry(
+            original_sql="SELECT 1",
+            client_ip="192.168.1.1",
+            request_id="req-abc-123",
+            session_id="sess-xyz-789",
+            user_agent="claude-code/1.0",
+            transport="sse",
+        )
+        data = json.loads(entry.to_json())
+        assert data["client_ip"] == "192.168.1.1"
+        assert data["request_id"] == "req-abc-123"
+        assert data["session_id"] == "sess-xyz-789"
+        assert data["user_agent"] == "claude-code/1.0"
+        assert data["transport"] == "sse"
+
+    def test_audit_entry_identity_fields_default_to_none(self):
+        from sanitized_db_mcp.audit import AuditEntry
+        entry = AuditEntry(original_sql="SELECT 1")
+        data = json.loads(entry.to_json())
+        assert data["client_ip"] is None
+        assert data["request_id"] is None
+        assert data["session_id"] is None
+        assert data["user_agent"] is None
+        assert data["transport"] is None
+
+    def test_extract_client_ip_from_x_forwarded_for(self):
+        """Should take rightmost XFF entry (proxy-appended, not client-provided)."""
+        from sanitized_db_mcp.audit import extract_client_ip
+        from unittest.mock import MagicMock
+        request = MagicMock()
+        request.headers = {"x-forwarded-for": "203.0.113.50, 70.41.3.18"}
+        request.client.host = "10.0.0.1"
+        assert extract_client_ip(request) == "70.41.3.18"
+
+    def test_extract_client_ip_single_xff_entry(self):
+        """Single XFF entry should work."""
+        from sanitized_db_mcp.audit import extract_client_ip
+        from unittest.mock import MagicMock
+        request = MagicMock()
+        request.headers = {"x-forwarded-for": "203.0.113.50"}
+        request.client.host = "10.0.0.1"
+        assert extract_client_ip(request) == "203.0.113.50"
+
+    def test_extract_client_ip_falls_back_to_client_host(self):
+        from sanitized_db_mcp.audit import extract_client_ip
+        from unittest.mock import MagicMock
+        request = MagicMock()
+        request.headers = {}
+        request.client.host = "192.168.1.50"
+        assert extract_client_ip(request) == "192.168.1.50"
+
+    def test_extract_client_ip_handles_no_client(self):
+        from sanitized_db_mcp.audit import extract_client_ip
+        from unittest.mock import MagicMock
+        request = MagicMock()
+        request.headers = {}
+        request.client = None
+        assert extract_client_ip(request) is None

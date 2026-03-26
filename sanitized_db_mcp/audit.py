@@ -6,7 +6,7 @@ Future: send to centralized logging (CloudWatch, Datadog) for
 6-year retention.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 import json
 import logging
 import time
@@ -29,23 +29,28 @@ class AuditEntry:
     columns_redacted: list[str] = field(default_factory=list)
     row_count: int | None = None
     execution_time_ms: float | None = None
+    # Required for HIPAA audit trail
+    client_ip: str | None = None
+    request_id: str | None = None
+    session_id: str | None = None
+    user_agent: str | None = None
+    transport: str | None = None
 
     def to_json(self) -> str:
-        return json.dumps(
-            {
-                "timestamp": self.timestamp,
-                "original_sql": self.original_sql,
-                "rewritten_sql": self.rewritten_sql,
-                "outcome": self.outcome,
-                "rejection_reason": self.rejection_reason,
-                "tables_accessed": self.tables_accessed,
-                "columns_accessed": self.columns_accessed,
-                "columns_redacted": self.columns_redacted,
-                "row_count": self.row_count,
-                "execution_time_ms": self.execution_time_ms,
-            },
-            default=str,
-        )
+        return json.dumps(asdict(self), default=str)
+
+
+def extract_client_ip(request) -> str | None:
+    """Extract client IP, respecting reverse proxy headers."""
+    if xff := request.headers.get("x-forwarded-for"):
+        # Rightmost entry: proxy appends real client IP last.
+        # Leftmost entries are client-provided and spoofable.
+        return xff.split(",")[-1].strip()
+    if xri := request.headers.get("x-real-ip"):
+        return xri.strip()
+    if request.client:
+        return request.client.host
+    return None
 
 
 def log_query(entry: AuditEntry):
